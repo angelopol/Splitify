@@ -15,6 +15,8 @@ export type NormalizedTrack = {
   artists: string[];
   artistIds?: string[];
   genres?: string[];
+  /** Where the genres came from: track | album | artist-spotify | artist-lastfm. */
+  genreSource?: string;
   album?: string;
   durationMs?: number;
   sourceOrder: number;

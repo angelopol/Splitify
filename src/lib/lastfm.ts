@@ -85,20 +85,36 @@ function cleanTags(
     .map((tag) => tag.name!.toLocaleLowerCase());
 }
 
+export type LookupStats = {
+  attempted: number;
+  failed: number;
+  rateLimited: boolean;
+};
+
+export function newLookupStats(): LookupStats {
+  return { attempted: 0, failed: 0, rateLimited: false };
+}
+
+// Last.fm reports errors with HTTP 200 + an { error, message } body.
+// Transient codes must NOT be cached, or the cache gets poisoned with
+// empty results and refinement silently stops working.
+const TRANSIENT_LASTFM_ERRORS = new Set([8, 11, 16, 29]);
+
 async function fetchTopTags(
   params: Record<string, string>,
   cache: Map<string, string[]>,
   key: string,
   minCount: number,
   excludeName: string,
-  apiKey: string
+  apiKey: string,
+  stats: LookupStats
 ) {
   const cached = cache.get(key);
   if (cached) {
     return cached;
   }
 
-  let tags: string[] = [];
+  stats.attempted += 1;
 
   try {
     const query = new URLSearchParams({
@@ -109,18 +125,40 @@ async function fetchTopTags(
     });
     const response = await fetch(`${LASTFM_API_BASE}?${query.toString()}`);
 
-    if (response.ok) {
-      const payload = (await response.json()) as {
-        toptags?: { tag?: { name?: string; count?: number }[] };
-      };
-      tags = cleanTags(payload.toptags?.tag ?? [], minCount, excludeName);
+    if (!response.ok) {
+      stats.failed += 1;
+      if (response.status === 429) {
+        stats.rateLimited = true;
+      }
+      return [];
     }
-  } catch {
-    // Tag lookups are best-effort.
-  }
 
-  cache.set(key, tags);
-  return tags;
+    const payload = (await response.json()) as {
+      error?: number;
+      toptags?: { tag?: { name?: string; count?: number }[] };
+    };
+
+    if (typeof payload.error === "number") {
+      if (TRANSIENT_LASTFM_ERRORS.has(payload.error)) {
+        stats.failed += 1;
+        if (payload.error === 29) {
+          stats.rateLimited = true;
+        }
+        return [];
+      }
+
+      // Permanent errors (bad params, unknown item): cache as empty.
+      cache.set(key, []);
+      return [];
+    }
+
+    const tags = cleanTags(payload.toptags?.tag ?? [], minCount, excludeName);
+    cache.set(key, tags);
+    return tags;
+  } catch {
+    stats.failed += 1;
+    return [];
+  }
 }
 
 function trackKey(track: NormalizedTrack) {
@@ -176,11 +214,17 @@ function shuffled<T>(items: T[]) {
 export async function fillGenresFromLastFm(
   tracks: NormalizedTrack[],
   onProgress?: (message: string) => void
-) {
+): Promise<string[]> {
+  const warnings: string[] = [];
   const apiKey = process.env.LASTFM_API_KEY;
   if (!apiKey) {
-    return;
+    warnings.push(
+      "LASTFM_API_KEY is not set — song/album genre lookups were skipped."
+    );
+    return warnings;
   }
+
+  const stats = newLookupStats();
 
   const { maxTrackLookups, maxAlbumLookups, batchDelayMs } = limits();
   const withArtist = tracks.filter((track) => track.artists.length > 0);
@@ -214,7 +258,8 @@ export async function fillGenresFromLastFm(
         albumKey(track),
         5,
         track.artists[0],
-        apiKey
+        apiKey,
+        stats
       ),
     (track) => albumCache.has(albumKey(track)),
     batchDelayMs,
@@ -226,6 +271,7 @@ export async function fillGenresFromLastFm(
     const tags = albumCache.get(albumKey(track));
     if (tags && tags.length > 0) {
       track.genres = tags;
+      track.genreSource = "album";
     }
   }
 
@@ -247,10 +293,12 @@ export async function fillGenresFromLastFm(
         trackKey(track),
         5,
         track.artists[0],
-        apiKey
+        apiKey,
+        stats
       );
       if (tags.length > 0) {
         track.genres = tags;
+        track.genreSource = "track";
       }
     },
     (track) => trackCache.has(trackKey(track)),
@@ -264,6 +312,7 @@ export async function fillGenresFromLastFm(
     const cachedTags = trackCache.get(trackKey(track));
     if (cachedTags && cachedTags.length > 0) {
       track.genres = cachedTags;
+      track.genreSource = "track";
     }
   }
 
@@ -275,7 +324,15 @@ export async function fillGenresFromLastFm(
     (track) => !trackCache.has(trackKey(track))
   );
 
-  if (trackBudget > 0 && unrefined.length > 0) {
+  if (stats.rateLimited) {
+    warnings.push(
+      "Last.fm rate limit hit — song-level refinement was skipped this run. Failed lookups are not cached and will be retried next time."
+    );
+  } else if (trackBudget <= 0) {
+    warnings.push(
+      `Track lookup budget (LASTFM_MAX_TRACK_LOOKUPS) was fully used before refinement — ${unrefined.length} album songs were not individually refined.`
+    );
+  } else if (unrefined.length > 0) {
     const sample = shuffled(unrefined).slice(0, trackBudget);
 
     await runBatches(
@@ -291,10 +348,12 @@ export async function fillGenresFromLastFm(
           trackKey(track),
           5,
           track.artists[0],
-          apiKey
+          apiKey,
+          stats
         );
         if (tags.length > 0) {
           track.genres = tags;
+          track.genreSource = "track";
         }
       },
       (track) => trackCache.has(trackKey(track)),
@@ -303,17 +362,32 @@ export async function fillGenresFromLastFm(
         onProgress?.(`Refining song genres on Last.fm (${done}/${total})…`)
     );
   }
+
+  if (stats.failed > 0) {
+    warnings.push(
+      `Last.fm: ${stats.failed} of ${stats.attempted} lookups failed${
+        stats.rateLimited ? " (rate limit)" : ""
+      }. Affected songs fell back to album/artist genres and will be retried on the next run.`
+    );
+  }
+
+  return warnings;
 }
 
 /**
  * Last-resort fallback: fills `genres` for tracks that are still empty,
  * using Last.fm community tags for the track's artists.
  */
-export async function fillMissingGenresFromLastFm(tracks: NormalizedTrack[]) {
+export async function fillMissingGenresFromLastFm(
+  tracks: NormalizedTrack[]
+): Promise<string[]> {
+  const warnings: string[] = [];
   const apiKey = process.env.LASTFM_API_KEY;
   if (!apiKey) {
-    return;
+    return warnings;
   }
+
+  const stats = newLookupStats();
 
   const pendingArtists: string[] = [];
   const seen = new Set<string>();
@@ -343,7 +417,8 @@ export async function fillMissingGenresFromLastFm(tracks: NormalizedTrack[]) {
         cacheKey(artist),
         10,
         artist,
-        apiKey
+        apiKey,
+        stats
       ),
     (artist) => artistCache.has(cacheKey(artist)),
     batchDelayMs
@@ -364,6 +439,17 @@ export async function fillMissingGenresFromLastFm(tracks: NormalizedTrack[]) {
 
     if (genres.length > 0) {
       track.genres = genres;
+      track.genreSource = "artist-lastfm";
     }
   }
+
+  if (stats.failed > 0) {
+    warnings.push(
+      `Last.fm: ${stats.failed} of ${stats.attempted} artist lookups failed${
+        stats.rateLimited ? " (rate limit)" : ""
+      }.`
+    );
+  }
+
+  return warnings;
 }

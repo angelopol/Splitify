@@ -290,6 +290,57 @@ export async function consolidateCategoriesWithAiAgent(input: {
   return groups;
 }
 
+/**
+ * Re-splits the tracks of a few vague playlists into the same number of
+ * playlists but with more specific, clearly different concepts.
+ */
+export async function regroupTracksWithAiAgent(input: {
+  tracks: NormalizedTrack[];
+  targetCount: number;
+  hint?: string | null;
+  avoidNames: string[];
+  duplicatePolicy: DuplicatePolicy;
+}): Promise<ClassificationResult> {
+  const prompt = JSON.stringify({
+    task: `Regroup these tracks into exactly ${input.targetCount} playlists with more specific, clearly distinct concepts.`,
+    rules: {
+      targetPlaylistCount: input.targetCount,
+      guidance: [
+        "The original playlists were too vague or overlapping.",
+        "Create sharper concepts: think sub-genres, moods or eras (e.g. 'drumless rap', 'psycho rap' instead of three 'Modern Rap & Trap').",
+        "Each playlist must feel clearly different from the others.",
+        "Use the genres field of each track as the main signal.",
+        "Every track must be assigned to exactly one playlist."
+      ],
+      userSuggestion: input.hint?.trim() || "none",
+      avoidTheseExistingNames: input.avoidNames
+    },
+    tracks: input.tracks.map(compactTrack)
+  });
+
+  try {
+    return validateClassificationResult(
+      await callAiProvider(prompt),
+      input.tracks,
+      input.duplicatePolicy
+    );
+  } catch (error) {
+    const repairPrompt = JSON.stringify({
+      repair: true,
+      previousError: error instanceof Error ? error.message : "Unknown error",
+      instruction:
+        "Return a corrected JSON object. Use only provided track IDs and the schema.",
+      originalInput: JSON.parse(prompt)
+    });
+
+    return validateClassificationResult(
+      await callAiProvider(repairPrompt),
+      input.tracks,
+      input.duplicatePolicy
+    );
+  }
+}
+
 export async function classifyTracksWithAiAgent(
   input: ClassifyInput
 ): Promise<ClassificationResult> {

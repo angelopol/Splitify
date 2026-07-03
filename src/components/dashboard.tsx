@@ -44,6 +44,13 @@ type Assignment = {
   album?: string;
   durationMs?: number;
   sourceOrder: number;
+  trackMetadata?: string;
+};
+
+type SummaryData = {
+  totalTracks: number;
+  totals: Record<string, number>;
+  albums: { name: string; tracks: number; refined: number; viaAlbum: number }[];
 };
 
 type SplitCategory = {
@@ -283,6 +290,9 @@ export function Dashboard({ userName }: { userName?: string | null }) {
   const [planText, setPlanText] = useState<string | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeSelect, setMergeSelect] = useState<string[]>([]);
+  const [regroupHint, setRegroupHint] = useState("");
+  const [regrouping, setRegrouping] = useState(false);
+  const [summary, setSummary] = useState<SummaryData | null>(null);
   const [prompt, setPrompt] = useState(PROMPT_PRESETS[0]);
   const [manualCategories, setManualCategories] = useState(
     "Late Night\nEnergy\nOld School"
@@ -325,9 +335,12 @@ export function Dashboard({ userName }: { userName?: string | null }) {
   function notify(tone: Toast["tone"], text: string) {
     const id = ++toastId.current;
     setToasts((current) => [...current.slice(-3), { id, tone, text }]);
-    setTimeout(() => {
-      setToasts((current) => current.filter((toast) => toast.id !== id));
-    }, 5000);
+    setTimeout(
+      () => {
+        setToasts((current) => current.filter((toast) => toast.id !== id));
+      },
+      tone === "error" ? 15000 : 5000
+    );
   }
 
   function dismissToast(id: number) {
@@ -434,7 +447,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     }, 1500);
 
     try {
-      const data = await readJson<{ split: SplitRun }>(
+      const data = await readJson<{ split: SplitRun; warnings?: string[] }>(
         await fetch("/api/splits", {
           method: "POST",
           headers: {
@@ -483,6 +496,9 @@ export function Dashboard({ userName }: { userName?: string | null }) {
         "success",
         `Preview ready: ${data.split.categories.length} playlists proposed.`
       );
+      for (const warning of data.warnings ?? []) {
+        notify("error", warning);
+      }
       goToStep(2);
     } catch (error) {
       notify(
@@ -857,6 +873,127 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     );
   }
 
+  function openSummary() {
+    if (!split) {
+      return;
+    }
+
+    // Computed lazily on open; parses trackMetadata only here.
+    const totals: Record<string, number> = {
+      track: 0,
+      album: 0,
+      "artist-spotify": 0,
+      "artist-lastfm": 0,
+      none: 0
+    };
+    const albums = new Map<
+      string,
+      { tracks: number; refined: number; viaAlbum: number }
+    >();
+    const seenTrackIds = new Set<string>();
+
+    for (const category of split.categories) {
+      for (const assignment of category.assignments) {
+        if (seenTrackIds.has(assignment.trackId)) {
+          continue;
+        }
+        seenTrackIds.add(assignment.trackId);
+
+        let source = "none";
+        let albumName = assignment.album ?? "";
+
+        if (assignment.trackMetadata) {
+          try {
+            const metadata = JSON.parse(assignment.trackMetadata) as {
+              genreSource?: string;
+              album?: string;
+              genres?: string[];
+            };
+            source = metadata.genreSource ?? (metadata.genres?.length ? "track" : "none");
+            albumName = metadata.album ?? albumName;
+          } catch {
+            // Ignore bad metadata.
+          }
+        }
+
+        totals[source] = (totals[source] ?? 0) + 1;
+
+        if (albumName) {
+          const entry = albums.get(albumName) ?? {
+            tracks: 0,
+            refined: 0,
+            viaAlbum: 0
+          };
+          entry.tracks += 1;
+          if (source === "track") {
+            entry.refined += 1;
+          }
+          if (source === "album") {
+            entry.viaAlbum += 1;
+          }
+          albums.set(albumName, entry);
+        }
+      }
+    }
+
+    setSummary({
+      totalTracks: seenTrackIds.size,
+      totals,
+      albums: Array.from(albums.entries())
+        .map(([name, data]) => ({ name, ...data }))
+        .sort((a, b) => b.tracks - a.tracks)
+    });
+  }
+
+  async function regroupSelected() {
+    if (!split || mergeSelect.length < 2) {
+      return;
+    }
+
+    if (dirty) {
+      const saved = await savePreview();
+      if (!saved) {
+        return;
+      }
+    }
+
+    setRegrouping(true);
+    notify(
+      "info",
+      `Asking the agent to regroup ${mergeSelect.length} playlists into sharper concepts…`
+    );
+
+    try {
+      const data = await readJson<{ split: SplitRun }>(
+        await fetch(`/api/splits/${split.id}/regroup`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            categoryIds: mergeSelect,
+            hint: regroupHint.trim() || undefined
+          })
+        })
+      );
+
+      setSplit(data.split);
+      setDirty(false);
+      setVisibleCounts({});
+      setMergeSelect([]);
+      setMergeMode(false);
+      setRegroupHint("");
+      notify("success", "Playlists regrouped with sharper concepts.");
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Unable to regroup."
+      );
+    } finally {
+      setRegrouping(false);
+    }
+  }
+
   function openPlanText() {
     if (!split) {
       return;
@@ -933,6 +1070,88 @@ export function Dashboard({ userName }: { userName?: string | null }) {
         close={() => setConfirmRequest(null)}
         request={confirmRequest}
       />
+
+      {summary !== null ? (
+        <div
+          aria-modal="true"
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+          onClick={() => setSummary(null)}
+          role="dialog"
+        >
+          <div
+            className="rise flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-[var(--line)] bg-[var(--panel-soft)] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-[var(--line)] p-4">
+              <Info
+                aria-hidden="true"
+                className="text-[var(--accent-strong)]"
+                size={18}
+              />
+              <h3 className="min-w-0 flex-1 truncate text-lg font-bold">
+                Genre analysis summary
+              </h3>
+              <button
+                className="focus-ring rounded-full p-1.5 text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                onClick={() => setSummary(null)}
+                title="Close"
+                type="button"
+              >
+                <X aria-hidden="true" size={18} />
+              </button>
+            </div>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+                {(
+                  [
+                    ["track", "Song tags"],
+                    ["album", "Album tags"],
+                    ["artist-spotify", "Artist (Spotify)"],
+                    ["artist-lastfm", "Artist (Last.fm)"],
+                    ["none", "No genre"]
+                  ] as const
+                ).map(([key, label]) => (
+                  <div
+                    className="rounded-xl border border-[var(--line)] bg-[var(--panel)] p-3 text-center"
+                    key={key}
+                  >
+                    <p className="text-xl font-black">
+                      {summary.totals[key] ?? 0}
+                    </p>
+                    <p className="mt-1 text-xs text-[var(--muted)]">{label}</p>
+                  </div>
+                ))}
+              </div>
+              <p className="mt-3 text-xs text-[var(--muted)]">
+                {summary.totalTracks} unique tracks · genre priority: song tags
+                &gt; album tags &gt; artist genres. &ldquo;Refined&rdquo; songs
+                were looked up individually on top of their album&rsquo;s tags.
+              </p>
+
+              <h4 className="mt-5 text-sm font-bold">
+                Albums detected ({summary.albums.length})
+              </h4>
+              <div className="mt-2 space-y-1">
+                {summary.albums.map((album) => (
+                  <div
+                    className="flex items-center gap-3 rounded-lg bg-[var(--panel)] px-3 py-2 text-sm"
+                    key={album.name}
+                  >
+                    <span className="min-w-0 flex-1 truncate font-semibold">
+                      {album.name}
+                    </span>
+                    <span className="shrink-0 text-xs text-[var(--muted)]">
+                      {album.tracks} tracks · {album.viaAlbum} via album ·{" "}
+                      {album.refined} refined
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {planText !== null ? (
         <div
@@ -1542,6 +1761,16 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             </button>
             <button
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
+              disabled={!split}
+              onClick={openSummary}
+              title="How genres were resolved for this split"
+              type="button"
+            >
+              <Info aria-hidden="true" size={16} />
+              Summary
+            </button>
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
               disabled={
                 !split ||
                 saving ||
@@ -1641,31 +1870,59 @@ export function Dashboard({ userName }: { userName?: string | null }) {
         ) : (
           <>
           {mergeMode ? (
-            <div className="rise mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)] bg-[var(--accent-soft)] px-4 py-3">
-              <p className="min-w-0 flex-1 text-sm font-semibold">
-                {mergeSelect.length < 2
-                  ? "Tick at least two playlists to merge. The first one keeps its name."
-                  : `${mergeSelect.length} playlists selected — the merged playlist keeps the first one's name.`}
-              </p>
-              <button
-                className="focus-ring inline-flex h-9 items-center gap-2 rounded-full bg-[var(--accent)] px-4 text-sm font-bold text-[#04140a] transition hover:bg-[var(--accent-strong)]"
-                disabled={mergeSelect.length < 2}
-                onClick={mergeSelectedCategories}
-                type="button"
-              >
-                <Layers aria-hidden="true" size={14} />
-                Merge {mergeSelect.length > 1 ? mergeSelect.length : ""}
-              </button>
-              <button
-                className="focus-ring inline-flex h-9 items-center rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:text-[var(--foreground)]"
-                onClick={() => {
-                  setMergeMode(false);
-                  setMergeSelect([]);
-                }}
-                type="button"
-              >
-                Cancel
-              </button>
+            <div className="rise mt-4 space-y-3 rounded-xl border border-[var(--accent)] bg-[var(--accent-soft)] px-4 py-3">
+              <div className="flex flex-wrap items-center gap-3">
+                <p className="min-w-0 flex-1 text-sm font-semibold">
+                  {mergeSelect.length < 2
+                    ? "Tick at least two playlists, then merge them into one or regroup them into sharper concepts."
+                    : `${mergeSelect.length} playlists selected.`}
+                </p>
+                <button
+                  className="focus-ring inline-flex h-9 items-center gap-2 rounded-full bg-[var(--accent)] px-4 text-sm font-bold text-[#04140a] transition hover:bg-[var(--accent-strong)]"
+                  disabled={mergeSelect.length < 2 || regrouping}
+                  onClick={mergeSelectedCategories}
+                  title="Combine into one playlist (keeps the first one's name)"
+                  type="button"
+                >
+                  <Layers aria-hidden="true" size={14} />
+                  Merge into one
+                </button>
+                <button
+                  className="focus-ring inline-flex h-9 items-center gap-2 rounded-full border border-[var(--accent)] px-4 text-sm font-bold text-[var(--accent-strong)] transition hover:bg-[var(--accent)] hover:text-[#04140a]"
+                  disabled={mergeSelect.length < 2 || regrouping}
+                  onClick={regroupSelected}
+                  title="Re-split these songs into the same number of playlists with more specific concepts"
+                  type="button"
+                >
+                  {regrouping ? (
+                    <Loader2
+                      aria-hidden="true"
+                      className="animate-spin"
+                      size={14}
+                    />
+                  ) : (
+                    <Sparkles aria-hidden="true" size={14} />
+                  )}
+                  Regroup with AI
+                </button>
+                <button
+                  className="focus-ring inline-flex h-9 items-center rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                  disabled={regrouping}
+                  onClick={() => {
+                    setMergeMode(false);
+                    setMergeSelect([]);
+                  }}
+                  type="button"
+                >
+                  Cancel
+                </button>
+              </div>
+              <input
+                className="field focus-ring h-10 w-full px-3 text-sm"
+                onChange={(event) => setRegroupHint(event.target.value)}
+                placeholder="Optional suggestion for the regroup, e.g. “split by sub-genre: drumless, psycho rap, boom bap”"
+                value={regroupHint}
+              />
             </div>
           ) : null}
           <div className="mt-4 grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">

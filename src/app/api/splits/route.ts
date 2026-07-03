@@ -173,7 +173,8 @@ export async function POST(request: Request) {
     // random sample of album songs refined with their own tags. Song tags
     // beat album tags; whatever is left falls back to artist genres.
     reportProgress("Resolving genres on Last.fm…");
-    await fillGenresFromLastFm(tracks, reportProgress);
+    const warnings: string[] = [];
+    warnings.push(...(await fillGenresFromLastFm(tracks, reportProgress)));
 
     const missingAfterTrackTags = tracks.filter(
       (track) => !track.genres || track.genres.length === 0
@@ -199,6 +200,7 @@ export async function POST(request: Request) {
 
         if (genres.length > 0) {
           track.genres = genres;
+          track.genreSource = "artist-spotify";
         }
       }
 
@@ -209,8 +211,18 @@ export async function POST(request: Request) {
         )
       ) {
         reportProgress("Filling remaining genres from Last.fm artists…");
-        await fillMissingGenresFromLastFm(tracks);
+        warnings.push(...(await fillMissingGenresFromLastFm(tracks)));
       }
+    }
+
+    const withoutGenres = tracks.filter(
+      (track) => !track.genres || track.genres.length === 0
+    ).length;
+
+    if (withoutGenres > 0) {
+      warnings.push(
+        `${withoutGenres} of ${tracks.length} songs ended up with no genre from any source; the agent will classify them from title/artist/album only.`
+      );
     }
 
     // With the "single" policy each track already appears at most once.
@@ -260,7 +272,7 @@ export async function POST(request: Request) {
       clearSplitProgress(userId, progressToken);
     }
 
-    return NextResponse.json({ split: serializeSplitRun(savedRun) });
+    return NextResponse.json({ split: serializeSplitRun(savedRun), warnings });
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to classify playlist.";

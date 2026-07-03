@@ -9,7 +9,12 @@ import {
   type PlaylistVisibility
 } from "@/lib/split-plan";
 import { serializeSplitRun, splitRunInclude } from "@/lib/split-serializer";
-import { addTracksToPlaylist, createSpotifyPlaylist } from "@/lib/spotify";
+import {
+  addTracksToPlaylist,
+  createSpotifyPlaylist,
+  getPlaylistTracks,
+  listUserPlaylists
+} from "@/lib/spotify";
 
 type RouteContext = {
   params: Promise<{
@@ -68,26 +73,65 @@ export async function POST(_request: Request, context: RouteContext) {
       }
     });
 
-    for (const category of run.categories) {
-      const playlist = await createSpotifyPlaylist(
-        session.user.id,
-        formatPlaylistName(run.playlistPrefix, category.name),
-        run.visibility as PlaylistVisibility
-      );
+    // Existing playlists (from a previous run or already in the library)
+    // are reused: only the missing tracks get added.
+    const libraryPlaylists = await listUserPlaylists(session.user.id);
+    const libraryByName = new Map(
+      libraryPlaylists.map((playlist) => [
+        playlist.name.trim().toLowerCase(),
+        playlist
+      ])
+    );
 
-      await addTracksToPlaylist(
-        session.user.id,
-        playlist.id,
-        category.assignments.map((assignment) => assignment.trackUri)
-      );
+    for (const category of run.categories) {
+      const targetName = formatPlaylistName(run.playlistPrefix, category.name);
+      const existing = category.spotifyPlaylistId
+        ? { id: category.spotifyPlaylistId, url: category.spotifyUrl }
+        : (() => {
+            const match = libraryByName.get(targetName.trim().toLowerCase());
+            return match
+              ? {
+                  id: match.id,
+                  url: `https://open.spotify.com/playlist/${match.id}`
+                }
+              : null;
+          })();
+
+      let playlistId: string;
+      let playlistUrl: string | null;
+      let uris = category.assignments.map((assignment) => assignment.trackUri);
+
+      if (existing) {
+        playlistId = existing.id;
+        playlistUrl = existing.url ?? null;
+
+        const currentTracks = await getPlaylistTracks(
+          session.user.id,
+          playlistId
+        );
+        const currentUris = new Set(currentTracks.map((track) => track.uri));
+        uris = uris.filter((uri) => !currentUris.has(uri));
+      } else {
+        const playlist = await createSpotifyPlaylist(
+          session.user.id,
+          targetName,
+          run.visibility as PlaylistVisibility
+        );
+        playlistId = playlist.id;
+        playlistUrl = playlist.externalUrl ?? null;
+      }
+
+      if (uris.length > 0) {
+        await addTracksToPlaylist(session.user.id, playlistId, uris);
+      }
 
       await prisma.splitCategory.update({
         where: {
           id: category.id
         },
         data: {
-          spotifyPlaylistId: playlist.id,
-          spotifyUrl: playlist.externalUrl
+          spotifyPlaylistId: playlistId,
+          spotifyUrl: playlistUrl
         }
       });
     }

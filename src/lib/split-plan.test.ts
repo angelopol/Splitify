@@ -2,12 +2,74 @@ import { describe, expect, it } from "vitest";
 
 import {
   chunkItems,
+  enforcePlanLimits,
   formatPlaylistName,
   mergeClassificationResults,
   parseManualCategories,
   validateClassificationResult,
   type NormalizedTrack
 } from "@/lib/split-plan";
+
+describe("enforcePlanLimits", () => {
+  it("caps how many playlists a track can appear in", () => {
+    const result = enforcePlanLimits(
+      {
+        categories: [
+          { name: "One", trackIds: ["a", "b"] },
+          { name: "Two", trackIds: ["a", "c"] },
+          { name: "Three", trackIds: ["a"] }
+        ]
+      },
+      { maxRepeatsPerTrack: 2, maxTracksPerPlaylist: null }
+    );
+
+    expect(result.categories.map((category) => category.trackIds)).toEqual([
+      ["a", "b"],
+      ["a", "c"]
+    ]);
+  });
+
+  it("caps the number of playlists by merging the smallest into Mixed", () => {
+    const result = enforcePlanLimits(
+      {
+        categories: [
+          { name: "Big", trackIds: ["a", "b", "c"] },
+          { name: "Medium", trackIds: ["d", "e"] },
+          { name: "Tiny 1", trackIds: ["f"] },
+          { name: "Tiny 2", trackIds: ["g"] }
+        ]
+      },
+      { maxRepeatsPerTrack: null, maxTracksPerPlaylist: null, maxPlaylists: 3 }
+    );
+
+    expect(result.categories.map((category) => category.name)).toEqual([
+      "Big",
+      "Medium",
+      "Mixed"
+    ]);
+    expect(result.categories[2].trackIds.sort()).toEqual(["f", "g"]);
+  });
+
+  it("splits oversized playlists into numbered parts", () => {
+    const result = enforcePlanLimits(
+      {
+        categories: [{ name: "Big", trackIds: ["a", "b", "c", "d", "e"] }]
+      },
+      { maxRepeatsPerTrack: null, maxTracksPerPlaylist: 2 }
+    );
+
+    expect(result.categories.map((category) => category.name)).toEqual([
+      "Big",
+      "Big (2)",
+      "Big (3)"
+    ]);
+    expect(result.categories.map((category) => category.trackIds)).toEqual([
+      ["a", "b"],
+      ["c", "d"],
+      ["e"]
+    ]);
+  });
+});
 
 const tracks: NormalizedTrack[] = [
   {

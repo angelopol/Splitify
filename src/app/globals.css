@@ -1,28 +1,48 @@
 @import "tailwindcss";
 
 :root {
-  --background: #f7f7f2;
-  --foreground: #151714;
-  --muted: #6d746c;
-  --panel: #ffffff;
-  --line: #dfe4d8;
+  --background: #0b0f0e;
+  --foreground: #f2f5f3;
+  --muted: #98a29d;
+  --panel: #131917;
+  --panel-soft: #18201d;
+  --line: #263029;
   --accent: #1db954;
-  --accent-strong: #12843c;
-  --ink: #10233f;
+  --accent-strong: #35d06b;
+  --accent-soft: rgba(29, 185, 84, 0.14);
+  --danger: #ff6b6b;
 }
 
 * {
   box-sizing: border-box;
 }
 
+html {
+  color-scheme: dark;
+}
+
 body {
   min-height: 100vh;
   margin: 0;
-  background:
-    linear-gradient(180deg, rgba(29, 185, 84, 0.08), transparent 340px),
-    var(--background);
+  background: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family:
+    "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system,
+    "Helvetica Neue", Arial, sans-serif;
+  overflow-x: hidden;
+}
+
+/* ambient background glow */
+body::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(600px 400px at 15% -5%, rgba(29, 185, 84, 0.16), transparent 70%),
+    radial-gradient(700px 500px at 90% 0%, rgba(56, 130, 246, 0.1), transparent 70%),
+    radial-gradient(800px 600px at 50% 110%, rgba(29, 185, 84, 0.07), transparent 70%);
+  pointer-events: none;
 }
 
 button,
@@ -37,7 +57,28 @@ input:disabled,
 select:disabled,
 textarea:disabled {
   cursor: not-allowed;
-  opacity: 0.65;
+  opacity: 0.55;
+}
+
+::placeholder {
+  color: #5d6863;
+}
+
+/* thin dark scrollbars */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #2c3833 transparent;
+}
+*::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+  background: #2c3833;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 .focus-ring {
@@ -47,4 +88,113 @@ textarea:disabled {
 
 .focus-ring:focus-visible {
   outline-color: var(--accent);
+}
+
+.panel {
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.01));
+  border: 1px solid var(--line);
+  border-radius: 16px;
+}
+
+.field {
+  background: #0e1412;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--foreground);
+  transition: border-color 150ms ease;
+}
+
+.field:hover:not(:disabled) {
+  border-color: #34423b;
+}
+
+.field:focus,
+.field:focus-visible {
+  border-color: var(--accent);
+  outline: none;
+}
+
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.rise {
+  animation: rise 320ms ease both;
+}
+
+@keyframes slide-in-right {
+  from {
+    opacity: 0;
+    transform: translateX(48px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes slide-in-left {
+  from {
+    opacity: 0;
+    transform: translateX(-48px);
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+.slide-forward {
+  animation: slide-in-right 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+.slide-back {
+  animation: slide-in-left 360ms cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@keyframes pulse-soft {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.45;
+  }
+}
+
+.pulse-soft {
+  animation: pulse-soft 1.4s ease-in-out infinite;
+}
+
+/* equalizer bars for the landing page / loading states */
+@keyframes eq {
+  0%,
+  100% {
+    transform: scaleY(0.3);
+  }
+  50% {
+    transform: scaleY(1);
+  }
+}
+
+.eq-bar {
+  transform-origin: bottom;
+  animation: eq 1s ease-in-out infinite;
+}
+
+.drop-target {
+  outline: 2px dashed var(--accent);
+  outline-offset: -2px;
+  background: var(--accent-soft) !important;
+}
+
+.dragging {
+  opacity: 0.4;
 }

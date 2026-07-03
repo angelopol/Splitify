@@ -13,6 +13,8 @@ export type NormalizedTrack = {
   uri: string;
   name: string;
   artists: string[];
+  artistIds?: string[];
+  genres?: string[];
   album?: string;
   durationMs?: number;
   sourceOrder: number;
@@ -129,7 +131,12 @@ export function mergeClassificationResults(
   for (const result of results) {
     for (const category of result.categories) {
       const name = normalizeCategoryName(category.name);
-      const key = name.toLocaleLowerCase();
+      // Ignore case and punctuation so "Latin Hip-Hop" and "latin hip hop"
+      // land in the same bucket.
+      const key = name
+        .toLocaleLowerCase()
+        .replace(/[^\p{L}\p{N}]+/gu, " ")
+        .trim();
       const existing =
         categories.get(key) ??
         categories
@@ -159,6 +166,122 @@ export function mergeClassificationResults(
       (category) => category.trackIds.length > 0
     )
   };
+}
+
+export type PlanLimits = {
+  /** Max playlists a single track may appear in; null means unlimited. */
+  maxRepeatsPerTrack: number | null;
+  /** Max tracks per generated playlist; null means unlimited. */
+  maxTracksPerPlaylist: number | null;
+  /** Max number of generated playlists; null means unlimited. */
+  maxPlaylists?: number | null;
+};
+
+export function enforcePlanLimits(
+  result: ClassificationResult,
+  limits: PlanLimits
+): ClassificationResult {
+  let categories = result.categories.map((category) => ({
+    ...category,
+    trackIds: [...category.trackIds]
+  }));
+
+  if (limits.maxRepeatsPerTrack !== null && limits.maxRepeatsPerTrack >= 1) {
+    const occurrences = new Map<string, number>();
+
+    categories = categories.map((category) => ({
+      ...category,
+      trackIds: category.trackIds.filter((trackId) => {
+        const count = occurrences.get(trackId) ?? 0;
+        if (count >= limits.maxRepeatsPerTrack!) {
+          return false;
+        }
+        occurrences.set(trackId, count + 1);
+        return true;
+      })
+    }));
+  }
+
+  let maxPlaylists = limits.maxPlaylists ?? null;
+
+  // If maxPlaylists × maxTracksPerPlaylist cannot hold every assignment,
+  // allow extra playlists instead of overflowing into endless "Mixed" parts.
+  if (
+    maxPlaylists !== null &&
+    limits.maxTracksPerPlaylist !== null &&
+    limits.maxTracksPerPlaylist >= 1
+  ) {
+    const totalAssignments = categories.reduce(
+      (total, category) => total + category.trackIds.length,
+      0
+    );
+    maxPlaylists = Math.max(
+      maxPlaylists,
+      Math.ceil(totalAssignments / limits.maxTracksPerPlaylist)
+    );
+  }
+
+  if (maxPlaylists !== null && maxPlaylists >= 1 && categories.length > maxPlaylists) {
+    // Keep the largest categories; everything else merges into one bucket
+    // so no track is silently dropped.
+    const sorted = [...categories].sort(
+      (a, b) => b.trackIds.length - a.trackIds.length
+    );
+    const kept = sorted.slice(0, Math.max(1, maxPlaylists - 1));
+    const merged = sorted.slice(Math.max(1, maxPlaylists - 1));
+
+    if (merged.length > 0) {
+      const keptTrackIds = new Set(
+        kept.flatMap((category) => category.trackIds)
+      );
+      const mixedTrackIds: string[] = [];
+
+      for (const category of merged) {
+        for (const trackId of category.trackIds) {
+          if (!keptTrackIds.has(trackId) && !mixedTrackIds.includes(trackId)) {
+            mixedTrackIds.push(trackId);
+          }
+        }
+      }
+
+      categories = [
+        ...kept,
+        {
+          name: "Mixed",
+          description: "Combined from smaller categories.",
+          trackIds: mixedTrackIds
+        }
+      ];
+    } else {
+      categories = kept;
+    }
+  }
+
+  if (limits.maxTracksPerPlaylist !== null && limits.maxTracksPerPlaylist >= 1) {
+    // Overflowing categories are split into numbered parts so no track is
+    // silently dropped: "Energy", "Energy (2)", ...
+    categories = categories.flatMap((category) => {
+      if (category.trackIds.length <= limits.maxTracksPerPlaylist!) {
+        return [category];
+      }
+
+      return chunkItems(category.trackIds, limits.maxTracksPerPlaylist!).map(
+        (trackIds, index) => ({
+          name: index === 0 ? category.name : `${category.name} (${index + 1})`,
+          description: category.description,
+          trackIds
+        })
+      );
+    });
+  }
+
+  const compacted = categories.filter((category) => category.trackIds.length > 0);
+
+  if (compacted.length === 0) {
+    throw new Error("No tracks remain after applying the configured limits.");
+  }
+
+  return { categories: compacted };
 }
 
 export function formatPlaylistName(prefix: string, categoryName: string) {

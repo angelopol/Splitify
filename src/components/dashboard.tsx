@@ -1,16 +1,30 @@
 "use client";
 
 import {
+  AlertCircle,
+  ArrowLeft,
+  ArrowRight,
+  ArrowRightLeft,
   Check,
+  CheckCircle2,
+  Copy,
   ExternalLink,
+  FileText,
+  FolderPlus,
+  Layers,
+  GripVertical,
+  Info,
   Loader2,
   Music2,
   Play,
+  RotateCcw,
   Save,
-  Send,
-  Trash2
+  Search,
+  Sparkles,
+  Trash2,
+  X
 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 type Playlist = {
   id: string;
@@ -55,6 +69,39 @@ type ApiError = {
   error?: string;
 };
 
+type Toast = {
+  id: number;
+  tone: "info" | "success" | "error";
+  text: string;
+};
+
+type ConfirmRequest = {
+  title: string;
+  message: string;
+  confirmLabel: string;
+  tone: "danger" | "accent";
+  onConfirm: () => void;
+};
+
+const PROMPT_PRESETS = [
+  "Split by mood: chill, energy, melancholic, party.",
+  "Group by decade and era.",
+  "Separate by genre as precisely as possible.",
+  "Workout, focus, and wind-down playlists.",
+  "Road trip chapters: departure, highway, night drive."
+];
+
+const CATEGORY_COLORS = [
+  "#1db954",
+  "#4f8ef7",
+  "#e8a13c",
+  "#e05fa0",
+  "#8b5cf6",
+  "#2dd4bf",
+  "#f87171",
+  "#facc15"
+];
+
 async function readJson<T>(response: Response): Promise<T> {
   const text = await response.text();
   const payload = (text ? JSON.parse(text) : {}) as T & ApiError;
@@ -66,27 +113,221 @@ async function readJson<T>(response: Response): Promise<T> {
   return payload;
 }
 
+function formatDuration(totalMs: number) {
+  const minutes = Math.round(totalMs / 60000);
+  if (minutes < 60) {
+    return `${minutes} min`;
+  }
+  return `${Math.floor(minutes / 60)} h ${minutes % 60} min`;
+}
+
+function ToastStack({
+  toasts,
+  dismiss
+}: {
+  toasts: Toast[];
+  dismiss: (id: number) => void;
+}) {
+  return (
+    <div className="pointer-events-none fixed bottom-4 right-4 z-50 flex w-80 max-w-[calc(100vw-2rem)] flex-col gap-2">
+      {toasts.map((toast) => (
+        <div
+          className="rise pointer-events-auto flex items-start gap-2 rounded-xl border border-[var(--line)] bg-[var(--panel-soft)] p-3 text-sm shadow-xl"
+          key={toast.id}
+          role="status"
+        >
+          {toast.tone === "success" ? (
+            <CheckCircle2
+              aria-hidden="true"
+              className="mt-0.5 shrink-0 text-[var(--accent-strong)]"
+              size={16}
+            />
+          ) : toast.tone === "error" ? (
+            <AlertCircle
+              aria-hidden="true"
+              className="mt-0.5 shrink-0 text-[var(--danger)]"
+              size={16}
+            />
+          ) : (
+            <Info
+              aria-hidden="true"
+              className="mt-0.5 shrink-0 text-[#4f8ef7]"
+              size={16}
+            />
+          )}
+          <p className="min-w-0 flex-1 leading-5">{toast.text}</p>
+          <button
+            className="focus-ring shrink-0 text-[var(--muted)] hover:text-[var(--foreground)]"
+            onClick={() => dismiss(toast.id)}
+            title="Dismiss"
+            type="button"
+          >
+            <X aria-hidden="true" size={14} />
+          </button>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ConfirmDialog({
+  request,
+  close
+}: {
+  request: ConfirmRequest | null;
+  close: () => void;
+}) {
+  useEffect(() => {
+    if (!request) {
+      return;
+    }
+
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        close();
+      }
+    }
+
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [request, close]);
+
+  if (!request) {
+    return null;
+  }
+
+  return (
+    <div
+      aria-modal="true"
+      className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+      onClick={close}
+      role="dialog"
+    >
+      <div
+        className="rise w-full max-w-md rounded-2xl border border-[var(--line)] bg-[var(--panel-soft)] p-5 shadow-2xl"
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="flex items-start gap-3">
+          <span
+            className={`grid h-10 w-10 shrink-0 place-items-center rounded-full ${
+              request.tone === "danger"
+                ? "bg-[rgba(255,107,107,0.12)] text-[var(--danger)]"
+                : "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+            }`}
+          >
+            <AlertCircle aria-hidden="true" size={20} />
+          </span>
+          <div className="min-w-0">
+            <h3 className="text-lg font-bold">{request.title}</h3>
+            <p className="mt-1 text-sm leading-6 text-[var(--muted)]">
+              {request.message}
+            </p>
+          </div>
+        </div>
+        <div className="mt-5 flex justify-end gap-2">
+          <button
+            autoFocus
+            className="focus-ring inline-flex h-10 items-center rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:border-[#3a4740] hover:text-[var(--foreground)]"
+            onClick={close}
+            type="button"
+          >
+            Cancel
+          </button>
+          <button
+            className={`focus-ring inline-flex h-10 items-center rounded-full px-4 text-sm font-bold transition ${
+              request.tone === "danger"
+                ? "bg-[var(--danger)] text-[#1c0808] hover:brightness-110"
+                : "bg-[var(--accent)] text-[#04140a] hover:bg-[var(--accent-strong)]"
+            }`}
+            onClick={() => {
+              close();
+              request.onConfirm();
+            }}
+            type="button"
+          >
+            {request.confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function Dashboard({ userName }: { userName?: string | null }) {
   const [playlists, setPlaylists] = useState<Playlist[]>([]);
-  const [selectedPlaylistId, setSelectedPlaylistId] = useState("");
+  const [playlistQuery, setPlaylistQuery] = useState("");
+  const [selectedPlaylistIds, setSelectedPlaylistIds] = useState<string[]>([]);
   const [mode, setMode] = useState<"prompt" | "manual" | "both">("both");
   const [duplicatePolicy, setDuplicatePolicy] = useState<"single" | "overlap">(
     "single"
   );
   const [playlistPrefix, setPlaylistPrefix] = useState("Splitify -");
-  const [prompt, setPrompt] = useState(
-    "Split this playlist into clear, useful listening moods."
-  );
+  const [maxRepeats, setMaxRepeats] = useState("3");
+  const [unlimitedRepeats, setUnlimitedRepeats] = useState(false);
+  const [maxPerPlaylist, setMaxPerPlaylist] = useState("");
+  const [maxPlaylists, setMaxPlaylists] = useState("10");
+  const [progress, setProgress] = useState<{
+    message: string;
+    current?: number;
+    total?: number;
+  } | null>(null);
+  const [visibleCounts, setVisibleCounts] = useState<Record<string, number>>({});
+  const [moveMenu, setMoveMenu] = useState<{
+    categoryId: string;
+    assignmentId: string;
+  } | null>(null);
+  const [merging, setMerging] = useState(false);
+  const [planText, setPlanText] = useState<string | null>(null);
+  const [prompt, setPrompt] = useState(PROMPT_PRESETS[0]);
   const [manualCategories, setManualCategories] = useState(
     "Late Night\nEnergy\nOld School"
   );
   const [split, setSplit] = useState<SplitRun | null>(null);
+  const [dirty, setDirty] = useState(false);
   const [loadingPlaylists, setLoadingPlaylists] = useState(true);
   const [working, setWorking] = useState(false);
   const [saving, setSaving] = useState(false);
   const [executing, setExecuting] = useState(false);
   const [removingPlaylist, setRemovingPlaylist] = useState(false);
-  const [message, setMessage] = useState<string | null>(null);
+  const [trackFilter, setTrackFilter] = useState("");
+  const [dragging, setDragging] = useState<{
+    assignmentId: string;
+    sourceCategoryId: string;
+  } | null>(null);
+  const [dropCategoryId, setDropCategoryId] = useState<string | null>(null);
+  const [toasts, setToasts] = useState<Toast[]>([]);
+  const [confirmRequest, setConfirmRequest] = useState<ConfirmRequest | null>(
+    null
+  );
+  const [step, setStep] = useState(0);
+  const [direction, setDirection] = useState<"forward" | "back">("forward");
+  const toastId = useRef(0);
+  const localCategoryId = useRef(0);
+
+  function goToStep(next: number) {
+    setDirection(next >= step ? "forward" : "back");
+    setStep(next);
+  }
+
+  function restart() {
+    setSplit(null);
+    setDirty(false);
+    setTrackFilter("");
+    setPlaylistQuery("");
+    goToStep(0);
+  }
+
+  function notify(tone: Toast["tone"], text: string) {
+    const id = ++toastId.current;
+    setToasts((current) => [...current.slice(-3), { id, tone, text }]);
+    setTimeout(() => {
+      setToasts((current) => current.filter((toast) => toast.id !== id));
+    }, 5000);
+  }
+
+  function dismissToast(id: number) {
+    setToasts((current) => current.filter((toast) => toast.id !== id));
+  }
 
   useEffect(() => {
     let mounted = true;
@@ -102,9 +343,13 @@ export function Dashboard({ userName }: { userName?: string | null }) {
         }
 
         setPlaylists(data.playlists);
-        setSelectedPlaylistId(data.playlists[0]?.id ?? "");
       } catch (error) {
-        setMessage(error instanceof Error ? error.message : "Unable to load.");
+        if (mounted) {
+          notify(
+            "error",
+            error instanceof Error ? error.message : "Unable to load playlists."
+          );
+        }
       } finally {
         if (mounted) {
           setLoadingPlaylists(false);
@@ -119,10 +364,31 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     };
   }, []);
 
-  const selectedPlaylist = useMemo(
-    () => playlists.find((playlist) => playlist.id === selectedPlaylistId),
-    [playlists, selectedPlaylistId]
+  const selectedPlaylists = useMemo(
+    () =>
+      selectedPlaylistIds
+        .map((id) => playlists.find((playlist) => playlist.id === id))
+        .filter((playlist): playlist is Playlist => Boolean(playlist)),
+    [playlists, selectedPlaylistIds]
   );
+
+  function togglePlaylist(id: string) {
+    setSelectedPlaylistIds((current) =>
+      current.includes(id)
+        ? current.filter((item) => item !== id)
+        : [...current, id]
+    );
+  }
+
+  const visiblePlaylists = useMemo(() => {
+    const query = playlistQuery.trim().toLowerCase();
+    if (!query) {
+      return playlists;
+    }
+    return playlists.filter((playlist) =>
+      playlist.name.toLowerCase().includes(query)
+    );
+  }, [playlists, playlistQuery]);
 
   const totalAssigned = useMemo(
     () =>
@@ -133,13 +399,34 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     [split]
   );
 
+  const isLocked = split?.status === "executing" || split?.status === "completed";
+
+  function markDirty() {
+    setDirty(true);
+  }
+
   async function generateSplit() {
-    if (!selectedPlaylist) {
+    if (selectedPlaylists.length === 0) {
       return;
     }
 
     setWorking(true);
-    setMessage("Classifying with the AI agent...");
+    setProgress({ message: "Starting…" });
+
+    const progressToken = crypto.randomUUID();
+    const poller = setInterval(async () => {
+      try {
+        const data = await readJson<{
+          progress: { message: string; current?: number; total?: number } | null;
+        }>(await fetch(`/api/splits/progress?token=${progressToken}`));
+
+        if (data.progress) {
+          setProgress(data.progress);
+        }
+      } catch {
+        // Polling errors are never fatal.
+      }
+    }, 1500);
 
     try {
       const data = await readJson<{ split: SplitRun }>(
@@ -149,8 +436,10 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            sourcePlaylistId: selectedPlaylist.id,
-            sourcePlaylistName: selectedPlaylist.name,
+            sourcePlaylists: selectedPlaylists.map((playlist) => ({
+              id: playlist.id,
+              name: playlist.name
+            })),
             prompt,
             mode,
             duplicatePolicy,
@@ -159,62 +448,107 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             manualCategories: manualCategories
               .split(/\r?\n|,/)
               .map((item) => item.trim())
-              .filter(Boolean)
+              .filter(Boolean),
+            maxRepeatsPerTrack: unlimitedRepeats
+              ? null
+              : Math.max(1, Number.parseInt(maxRepeats, 10) || 3),
+            maxTracksPerPlaylist:
+              Number.parseInt(maxPerPlaylist, 10) > 0
+                ? Number.parseInt(maxPerPlaylist, 10)
+                : null,
+            maxPlaylists:
+              Number.parseInt(maxPlaylists, 10) > 0
+                ? Number.parseInt(maxPlaylists, 10)
+                : null,
+            progressToken
           })
         })
       );
 
       setSplit(data.split);
-      setMessage("Preview ready.");
+      setDirty(false);
+      setTrackFilter("");
+      setVisibleCounts({});
+      setMoveMenu(null);
+      notify(
+        "success",
+        `Preview ready: ${data.split.categories.length} playlists proposed.`
+      );
+      goToStep(2);
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to classify.");
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Unable to classify."
+      );
     } finally {
+      clearInterval(poller);
+      setProgress(null);
       setWorking(false);
     }
   }
 
-  async function removeSelectedPlaylist() {
-    if (!selectedPlaylist) {
+  function requestRemovePlaylists(targets: Playlist[]) {
+    if (targets.length === 0) {
       return;
     }
 
-    const confirmed = window.confirm(
-      `Remove "${selectedPlaylist.name}" from your Spotify library?`
-    );
+    setConfirmRequest({
+      title: targets.length === 1 ? "Remove playlist" : "Remove playlists",
+      message:
+        targets.length === 1
+          ? `Remove "${targets[0].name}" from your Spotify library? You can re-follow it later only if someone else owns it.`
+          : `Remove these ${targets.length} playlists from your Spotify library? ${targets
+              .map((playlist) => `"${playlist.name}"`)
+              .join(", ")}.`,
+      confirmLabel: targets.length === 1 ? "Remove" : `Remove ${targets.length}`,
+      tone: "danger",
+      onConfirm: () => removePlaylists(targets)
+    });
+  }
 
-    if (!confirmed) {
-      return;
-    }
-
+  async function removePlaylists(targets: Playlist[]) {
     setRemovingPlaylist(true);
-    setMessage("Removing playlist...");
 
-    try {
-      await readJson<{ ok: boolean }>(
-        await fetch(`/api/playlists/${selectedPlaylist.id}`, {
-          method: "DELETE"
-        })
-      );
+    const removedIds: string[] = [];
+    const failed: string[] = [];
 
-      setPlaylists((current) => {
-        const next = current.filter(
-          (playlist) => playlist.id !== selectedPlaylist.id
+    for (const playlist of targets) {
+      try {
+        await readJson<{ ok: boolean }>(
+          await fetch(`/api/playlists/${playlist.id}`, {
+            method: "DELETE"
+          })
         );
-        setSelectedPlaylistId(next[0]?.id ?? "");
-        return next;
-      });
-      setSplit(null);
-      setMessage("Playlist removed from your library.");
-    } catch (error) {
-      setMessage(
-        error instanceof Error ? error.message : "Unable to remove playlist."
-      );
-    } finally {
-      setRemovingPlaylist(false);
+        removedIds.push(playlist.id);
+      } catch {
+        failed.push(playlist.name);
+      }
     }
+
+    if (removedIds.length > 0) {
+      setPlaylists((current) =>
+        current.filter((item) => !removedIds.includes(item.id))
+      );
+      setSelectedPlaylistIds((current) =>
+        current.filter((id) => !removedIds.includes(id))
+      );
+      notify(
+        "success",
+        removedIds.length === 1
+          ? "Playlist removed from your library."
+          : `${removedIds.length} playlists removed from your library.`
+      );
+    }
+
+    if (failed.length > 0) {
+      notify("error", `Could not remove: ${failed.join(", ")}.`);
+    }
+
+    setRemovingPlaylist(false);
   }
 
   function updateCategoryName(categoryId: string, name: string) {
+    markDirty();
     setSplit((current) =>
       current
         ? {
@@ -236,6 +570,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
       return;
     }
 
+    markDirty();
     setSplit((current) => {
       if (!current) {
         return current;
@@ -244,11 +579,20 @@ export function Dashboard({ userName }: { userName?: string | null }) {
       const source = current.categories.find(
         (category) => category.id === sourceCategoryId
       );
-      const assignment = source?.assignments.find((item) => item.id === assignmentId);
+      const assignment = source?.assignments.find(
+        (item) => item.id === assignmentId
+      );
 
       if (!assignment) {
         return current;
       }
+
+      const target = current.categories.find(
+        (category) => category.id === targetCategoryId
+      );
+      const duplicate = target?.assignments.some(
+        (item) => item.trackId === assignment.trackId
+      );
 
       return {
         ...current,
@@ -262,7 +606,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             };
           }
 
-          if (category.id === targetCategoryId) {
+          if (category.id === targetCategoryId && !duplicate) {
             return {
               ...category,
               assignments: [...category.assignments, assignment]
@@ -276,6 +620,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
   }
 
   function removeAssignment(categoryId: string, assignmentId: string) {
+    markDirty();
     setSplit((current) =>
       current
         ? {
@@ -295,13 +640,71 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     );
   }
 
+  function addCategory() {
+    markDirty();
+    const id = `local-${++localCategoryId.current}`;
+    setSplit((current) =>
+      current
+        ? {
+            ...current,
+            categories: [
+              ...current.categories,
+              {
+                id,
+                name: `New playlist ${current.categories.length + 1}`,
+                assignments: []
+              }
+            ]
+          }
+        : current
+    );
+  }
+
+  function deleteCategory(categoryId: string) {
+    markDirty();
+    setSplit((current) =>
+      current
+        ? {
+            ...current,
+            categories: current.categories.filter(
+              (item) => item.id !== categoryId
+            )
+          }
+        : current
+    );
+  }
+
+  function removeCategory(categoryId: string) {
+    const category = split?.categories.find((item) => item.id === categoryId);
+    if (!category || !split) {
+      return;
+    }
+
+    if (split.categories.length <= 1) {
+      notify("error", "You need at least one playlist in the plan.");
+      return;
+    }
+
+    if (category.assignments.length > 0) {
+      setConfirmRequest({
+        title: "Delete playlist from plan",
+        message: `Delete "${category.name}" and drop its ${category.assignments.length} tracks from the plan? The songs stay in your source playlist.`,
+        confirmLabel: "Delete",
+        tone: "danger",
+        onConfirm: () => deleteCategory(categoryId)
+      });
+      return;
+    }
+
+    deleteCategory(categoryId);
+  }
+
   async function savePreview() {
     if (!split) {
       return;
     }
 
     setSaving(true);
-    setMessage("Saving preview...");
 
     try {
       const data = await readJson<{ split: SplitRun }>(
@@ -315,19 +718,87 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             categories: split.categories.map((category) => ({
               name: category.name,
               description: category.description,
-              trackIds: category.assignments.map((assignment) => assignment.trackId)
+              trackIds: category.assignments.map(
+                (assignment) => assignment.trackId
+              )
             }))
           })
         })
       );
 
       setSplit(data.split);
-      setMessage("Preview saved.");
+      setDirty(false);
+      notify("success", "Preview saved.");
+      return data.split;
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to save.");
+      notify("error", error instanceof Error ? error.message : "Unable to save.");
+      return null;
     } finally {
       setSaving(false);
     }
+  }
+
+  async function mergeSimilar() {
+    if (!split) {
+      return;
+    }
+
+    if (dirty) {
+      const saved = await savePreview();
+      if (!saved) {
+        return;
+      }
+    }
+
+    setMerging(true);
+    notify("info", "Asking the agent to merge similar playlists…");
+
+    try {
+      const data = await readJson<{ split: SplitRun }>(
+        await fetch(`/api/splits/${split.id}/consolidate`, {
+          method: "POST"
+        })
+      );
+
+      const before = split.categories.length;
+      setSplit(data.split);
+      setDirty(false);
+      setVisibleCounts({});
+      setMoveMenu(null);
+      notify(
+        "success",
+        `Merged ${before} playlists into ${data.split.categories.length}.`
+      );
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Unable to merge playlists."
+      );
+    } finally {
+      setMerging(false);
+    }
+  }
+
+  function openPlanText() {
+    if (!split) {
+      return;
+    }
+
+    // Generated lazily on open so big plans don't slow the normal render.
+    const lines: string[] = [
+      `${split.sourcePlaylistName} — ${split.categories.length} playlists, ${totalAssigned} tracks`,
+      ""
+    ];
+
+    for (const category of split.categories) {
+      lines.push(`## ${category.name} (${category.assignments.length})`);
+      for (const assignment of category.assignments) {
+        lines.push(`- ${assignment.trackName} — ${assignment.artists}`);
+      }
+      lines.push("");
+    }
+
+    setPlanText(lines.join("\n"));
   }
 
   async function executeSplit() {
@@ -335,8 +806,15 @@ export function Dashboard({ userName }: { userName?: string | null }) {
       return;
     }
 
+    if (dirty) {
+      const saved = await savePreview();
+      if (!saved) {
+        return;
+      }
+    }
+
     setExecuting(true);
-    setMessage("Creating playlists in Spotify...");
+    notify("info", "Creating playlists in Spotify…");
 
     try {
       const data = await readJson<{ split: SplitRun }>(
@@ -346,226 +824,747 @@ export function Dashboard({ userName }: { userName?: string | null }) {
       );
 
       setSplit(data.split);
-      setMessage("Playlists created.");
+      notify(
+        "success",
+        `Done — ${data.split.categories.length} playlists created in Spotify.`
+      );
     } catch (error) {
-      setMessage(error instanceof Error ? error.message : "Unable to run.");
+      notify("error", error instanceof Error ? error.message : "Unable to run.");
     } finally {
       setExecuting(false);
     }
   }
 
+  function categoryColor(index: number) {
+    return CATEGORY_COLORS[index % CATEGORY_COLORS.length];
+  }
+
+  const filter = trackFilter.trim().toLowerCase();
+
   return (
-    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8">
-      <section className="flex flex-col justify-between gap-4 border-b border-[var(--line)] pb-5 sm:flex-row sm:items-end">
-        <div>
-          <p className="text-sm font-semibold text-[var(--accent-strong)]">
-            Splitify
-          </p>
-          <h1 className="mt-1 text-3xl font-bold tracking-normal text-[var(--foreground)]">
-            {userName ? `Hello, ${userName}` : "Dashboard"}
-          </h1>
-        </div>
-        <div className="rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm text-[var(--muted)]">
-          {message ?? "Ready to split playlists."}
-        </div>
-      </section>
+    <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
+      <ToastStack dismiss={dismissToast} toasts={toasts} />
+      {moveMenu ? (
+        <div
+          aria-hidden="true"
+          className="fixed inset-0 z-10"
+          onClick={() => setMoveMenu(null)}
+        />
+      ) : null}
+      <ConfirmDialog
+        close={() => setConfirmRequest(null)}
+        request={confirmRequest}
+      />
 
-      <section className="grid gap-6 lg:grid-cols-[380px_1fr]">
-        <aside className="h-fit rounded-lg border border-[var(--line)] bg-white p-4 shadow-sm">
-          <div className="flex items-center gap-2 text-lg font-bold">
-            <Music2 aria-hidden="true" size={20} />
-            New split
-          </div>
-
-          <div className="mt-5 space-y-4">
-            <label className="block text-sm font-semibold">
-              Source playlist
-              <select
-                className="focus-ring mt-2 h-11 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm"
-                disabled={loadingPlaylists || working}
-                onChange={(event) => setSelectedPlaylistId(event.target.value)}
-                value={selectedPlaylistId}
+      {planText !== null ? (
+        <div
+          aria-modal="true"
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+          onClick={() => setPlanText(null)}
+          role="dialog"
+        >
+          <div
+            className="rise flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-[var(--line)] bg-[var(--panel-soft)] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-[var(--line)] p-4">
+              <FileText
+                aria-hidden="true"
+                className="text-[var(--accent-strong)]"
+                size={18}
+              />
+              <h3 className="min-w-0 flex-1 truncate text-lg font-bold">
+                Plan as text
+              </h3>
+              <button
+                className="focus-ring inline-flex h-9 items-center gap-2 rounded-full border border-[var(--line)] px-3 text-xs font-semibold transition hover:border-[var(--accent)]"
+                onClick={async () => {
+                  await navigator.clipboard.writeText(planText);
+                  notify("success", "Plan copied to clipboard.");
+                }}
+                type="button"
               >
-                {loadingPlaylists ? (
-                  <option>Loading...</option>
-                ) : (
-                  playlists.map((playlist) => (
-                    <option key={playlist.id} value={playlist.id}>
-                      {playlist.name} ({playlist.trackCount})
-                    </option>
-                  ))
-                )}
-              </select>
-            </label>
+                <Copy aria-hidden="true" size={13} />
+                Copy
+              </button>
+              <button
+                className="focus-ring rounded-full p-1.5 text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                onClick={() => setPlanText(null)}
+                title="Close"
+                type="button"
+              >
+                <X aria-hidden="true" size={18} />
+              </button>
+            </div>
+            <pre className="min-h-0 flex-1 overflow-auto whitespace-pre-wrap p-4 text-xs leading-5 text-[var(--muted)]">
+              {planText}
+            </pre>
+          </div>
+        </div>
+      ) : null}
 
-            {selectedPlaylist ? (
-              <div className="flex items-center gap-3 rounded-md border border-[var(--line)] bg-[#f9fbf8] p-3">
-                <div
-                  aria-hidden="true"
-                  className="h-14 w-14 shrink-0 rounded-md bg-[var(--ink)] bg-cover bg-center"
-                  style={{
-                    backgroundImage: selectedPlaylist.imageUrl
-                      ? `url(${selectedPlaylist.imageUrl})`
-                      : undefined
-                  }}
-                />
-                <div className="min-w-0">
-                  <p className="truncate font-semibold">{selectedPlaylist.name}</p>
-                  <p className="text-sm text-[var(--muted)]">
-                    {selectedPlaylist.trackCount} tracks
-                  </p>
-                </div>
+      <header className="rise">
+        <p className="inline-flex items-center gap-2 text-sm font-bold uppercase tracking-widest text-[var(--accent-strong)]">
+          <Sparkles aria-hidden="true" size={14} />
+          Splitify
+        </p>
+        <h1 className="mt-2 text-4xl font-black tracking-tight">
+          {userName ? `Hey, ${userName.split(" ")[0]}` : "Dashboard"}
+        </h1>
+        <p className="mt-2 text-[var(--muted)]">
+          Pick a playlist, describe the split, and let the agent do the sorting.
+        </p>
+      </header>
+
+      {/* Stepper */}
+      <nav aria-label="Steps" className="rise flex items-center gap-2">
+        {["Choose playlist", "Describe split", "Review & ship"].map(
+          (label, index) => {
+            const reachable =
+              index === 0 ||
+              (index === 1 && selectedPlaylists.length > 0) ||
+              (index === 2 && Boolean(split));
+            const done =
+              index < step ||
+              (index === 2 && split?.status === "completed");
+
+            return (
+              <div className="flex min-w-0 flex-1 items-center gap-2" key={label}>
                 <button
-                  className="focus-ring ml-auto inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-[var(--line)] bg-white text-[#9b1c1c] transition hover:border-[#9b1c1c]"
-                  disabled={working || removingPlaylist}
-                  onClick={removeSelectedPlaylist}
-                  title="Remove from library"
+                  aria-current={step === index ? "step" : undefined}
+                  className={`focus-ring flex min-w-0 items-center gap-2 rounded-full border px-3 py-1.5 text-sm font-semibold transition ${
+                    step === index
+                      ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--foreground)]"
+                      : reachable
+                        ? "border-[var(--line)] text-[var(--muted)] hover:border-[#3a4740] hover:text-[var(--foreground)]"
+                        : "border-[var(--line)] text-[var(--muted)]"
+                  }`}
+                  disabled={!reachable}
+                  onClick={() => goToStep(index)}
                   type="button"
                 >
-                  {removingPlaylist ? (
-                    <Loader2
-                      aria-hidden="true"
-                      className="animate-spin"
-                      size={16}
-                    />
-                  ) : (
-                    <Trash2 aria-hidden="true" size={16} />
-                  )}
+                  <span
+                    className={`grid h-5 w-5 shrink-0 place-items-center rounded-full text-xs font-black ${
+                      done
+                        ? "bg-[var(--accent)] text-[#04140a]"
+                        : step === index
+                          ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                          : "bg-[var(--panel-soft)] text-[var(--muted)]"
+                    }`}
+                  >
+                    {done ? <Check aria-hidden="true" size={12} /> : index + 1}
+                  </span>
+                  <span className="hidden truncate sm:inline">{label}</span>
                 </button>
+                {index < 2 ? (
+                  <span
+                    aria-hidden="true"
+                    className={`h-px flex-1 ${
+                      index < step ? "bg-[var(--accent)]" : "bg-[var(--line)]"
+                    }`}
+                  />
+                ) : null}
+              </div>
+            );
+          }
+        )}
+      </nav>
+
+      {/* Step 1: playlist picker */}
+      {step === 0 ? (
+      <section
+        className={`panel p-5 ${direction === "forward" ? "slide-forward" : "slide-back"}`}
+        key="step-0"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <h2 className="flex items-center gap-2 text-lg font-bold">
+            <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-soft)] text-sm font-black text-[var(--accent-strong)]">
+              1
+            </span>
+            Choose a source playlist
+          </h2>
+          <div className="relative">
+            <Search
+              aria-hidden="true"
+              className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]"
+              size={15}
+            />
+            <input
+              className="field focus-ring h-10 w-64 max-w-full pl-9 pr-3 text-sm"
+              onChange={(event) => setPlaylistQuery(event.target.value)}
+              placeholder="Search your playlists…"
+              value={playlistQuery}
+            />
+          </div>
+        </div>
+
+        {loadingPlaylists ? (
+          <div className="mt-4 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-6">
+            {Array.from({ length: 6 }).map((_, index) => (
+              <div
+                className="pulse-soft h-40 rounded-xl bg-[var(--panel-soft)]"
+                key={index}
+              />
+            ))}
+          </div>
+        ) : visiblePlaylists.length === 0 ? (
+          <p className="mt-6 text-sm text-[var(--muted)]">
+            No playlists match “{playlistQuery}”.
+          </p>
+        ) : (
+          <div className="mt-4 grid max-h-[420px] grid-cols-2 gap-3 overflow-y-auto pr-1 sm:grid-cols-3 lg:grid-cols-6">
+            {visiblePlaylists.map((playlist) => {
+              const selected = selectedPlaylistIds.includes(playlist.id);
+              return (
+                <button
+                  className={`focus-ring group relative overflow-hidden rounded-xl border text-left transition ${
+                    selected
+                      ? "border-[var(--accent)] shadow-[0_0_24px_rgba(29,185,84,0.25)]"
+                      : "border-[var(--line)] hover:border-[#3a4740]"
+                  }`}
+                  aria-pressed={selected}
+                  disabled={working}
+                  key={playlist.id}
+                  onClick={() => togglePlaylist(playlist.id)}
+                  type="button"
+                >
+                  <div
+                    className="aspect-square w-full bg-[var(--panel-soft)] bg-cover bg-center transition duration-300 group-hover:scale-[1.04]"
+                    style={{
+                      backgroundImage: playlist.imageUrl
+                        ? `url(${playlist.imageUrl})`
+                        : undefined
+                    }}
+                  >
+                    {!playlist.imageUrl ? (
+                      <div className="grid h-full w-full place-items-center text-[var(--muted)]">
+                        <Music2 aria-hidden="true" size={28} />
+                      </div>
+                    ) : null}
+                  </div>
+                  {selected ? (
+                    <span className="absolute right-2 top-2 grid h-6 w-6 place-items-center rounded-full bg-[var(--accent)] text-[#04140a]">
+                      <Check aria-hidden="true" size={14} />
+                    </span>
+                  ) : null}
+                  <div className="bg-[var(--panel)] p-2">
+                    <p className="truncate text-sm font-semibold">
+                      {playlist.name}
+                    </p>
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        )}
+
+        {selectedPlaylists.length > 0 ? (
+          <div className="mt-4 flex flex-wrap items-center gap-2 text-sm text-[var(--muted)]">
+            <span>
+              Selected ({selectedPlaylists.length})
+              {selectedPlaylists.length > 1 ? " — they will be combined:" : ":"}
+            </span>
+            {selectedPlaylists.map((playlist) => (
+              <span
+                className="inline-flex items-center gap-1.5 rounded-full border border-[var(--line)] bg-[var(--panel-soft)] py-1 pl-3 pr-1.5 text-xs font-semibold text-[var(--foreground)]"
+                key={playlist.id}
+              >
+                {playlist.name}
+                <button
+                  className="focus-ring rounded-full p-0.5 text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                  onClick={() => togglePlaylist(playlist.id)}
+                  title="Deselect"
+                  type="button"
+                >
+                  <X aria-hidden="true" size={12} />
+                </button>
+              </span>
+            ))}
+            <button
+              className="focus-ring inline-flex items-center gap-1 rounded-full border border-[var(--line)] px-2.5 py-1 text-xs font-semibold text-[var(--danger)] transition hover:border-[var(--danger)]"
+              disabled={working || removingPlaylist}
+              onClick={() => requestRemovePlaylists(selectedPlaylists)}
+              type="button"
+            >
+              {removingPlaylist ? (
+                <Loader2 aria-hidden="true" className="animate-spin" size={12} />
+              ) : (
+                <Trash2 aria-hidden="true" size={12} />
+              )}
+              {selectedPlaylists.length === 1
+                ? "Remove from library"
+                : `Remove ${selectedPlaylists.length} from library`}
+            </button>
+          </div>
+        ) : null}
+
+        <div className="mt-5 flex justify-end border-t border-[var(--line)] pt-4">
+          <button
+            className="focus-ring inline-flex h-11 items-center gap-2 rounded-full bg-[var(--accent)] px-5 font-bold text-[#04140a] transition hover:bg-[var(--accent-strong)]"
+            disabled={selectedPlaylists.length === 0}
+            onClick={() => goToStep(1)}
+            type="button"
+          >
+            Continue
+            <ArrowRight aria-hidden="true" size={16} />
+          </button>
+        </div>
+      </section>
+      ) : null}
+
+      {/* Step 2: configuration */}
+      {step === 1 ? (
+      <section
+        className={`panel p-5 ${direction === "forward" ? "slide-forward" : "slide-back"}`}
+        key="step-1"
+      >
+        <h2 className="flex items-center gap-2 text-lg font-bold">
+          <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-soft)] text-sm font-black text-[var(--accent-strong)]">
+            2
+          </span>
+          Describe the split
+          {selectedPlaylists.length > 0 ? (
+            <span className="truncate rounded-full bg-[var(--panel-soft)] px-2.5 py-0.5 text-xs font-semibold text-[var(--muted)]">
+              {selectedPlaylists.map((playlist) => playlist.name).join(" + ")}
+            </span>
+          ) : null}
+        </h2>
+
+        <div className="mt-4 grid gap-5 lg:grid-cols-[1fr_320px]">
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm font-semibold">Mode</p>
+              <div className="mt-2 inline-flex rounded-full border border-[var(--line)] bg-[#0e1412] p-1">
+                {(
+                  [
+                    ["both", "Prompt + categories"],
+                    ["prompt", "Prompt only"],
+                    ["manual", "Categories only"]
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    className={`focus-ring rounded-full px-4 py-1.5 text-sm font-semibold transition ${
+                      mode === value
+                        ? "bg-[var(--accent)] text-[#04140a]"
+                        : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                    }`}
+                    key={value}
+                    onClick={() => setMode(value)}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {mode !== "manual" ? (
+              <div>
+                <label className="block text-sm font-semibold" htmlFor="prompt">
+                  Prompt
+                </label>
+                <textarea
+                  className="field focus-ring mt-2 min-h-24 w-full resize-y px-3 py-2 text-sm leading-6"
+                  id="prompt"
+                  onChange={(event) => setPrompt(event.target.value)}
+                  value={prompt}
+                />
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {PROMPT_PRESETS.map((preset) => (
+                    <button
+                      className={`focus-ring rounded-full border px-3 py-1 text-xs transition ${
+                        prompt === preset
+                          ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                          : "border-[var(--line)] text-[var(--muted)] hover:border-[#3a4740] hover:text-[var(--foreground)]"
+                      }`}
+                      key={preset}
+                      onClick={() => setPrompt(preset)}
+                      type="button"
+                    >
+                      {preset}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            {mode !== "prompt" ? (
+              <label className="block text-sm font-semibold">
+                Categories (one per line)
+                <textarea
+                  className="field focus-ring mt-2 min-h-24 w-full resize-y px-3 py-2 text-sm leading-6"
+                  onChange={(event) => setManualCategories(event.target.value)}
+                  value={manualCategories}
+                />
+              </label>
+            ) : null}
+          </div>
+
+          <div className="space-y-4">
+            <div>
+              <p className="text-sm font-semibold">Duplicates</p>
+              <div className="mt-2 grid gap-2">
+                {(
+                  [
+                    ["single", "Each song in one playlist"],
+                    ["overlap", "Songs can repeat across playlists"]
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    className={`focus-ring rounded-xl border px-3 py-2.5 text-left text-sm font-semibold transition ${
+                      duplicatePolicy === value
+                        ? "border-[var(--accent)] bg-[var(--accent-soft)]"
+                        : "border-[var(--line)] text-[var(--muted)] hover:border-[#3a4740]"
+                    }`}
+                    key={value}
+                    onClick={() => setDuplicatePolicy(value)}
+                    type="button"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {duplicatePolicy === "overlap" ? (
+              <div>
+                <p className="text-sm font-semibold">Max playlists per song</p>
+                <div className="mt-2 flex items-center gap-2">
+                  <input
+                    className="field focus-ring h-11 w-20 px-3 text-sm"
+                    disabled={unlimitedRepeats}
+                    inputMode="numeric"
+                    min={1}
+                    onChange={(event) => setMaxRepeats(event.target.value)}
+                    type="number"
+                    value={maxRepeats}
+                  />
+                  <label className="flex cursor-pointer items-center gap-2 text-sm text-[var(--muted)]">
+                    <input
+                      checked={unlimitedRepeats}
+                      className="focus-ring h-4 w-4 accent-[var(--accent)]"
+                      onChange={(event) =>
+                        setUnlimitedRepeats(event.target.checked)
+                      }
+                      type="checkbox"
+                    />
+                    Unlimited
+                  </label>
+                </div>
+                <p className="mt-1 text-xs text-[var(--muted)]">
+                  How many playlists a single song may appear in.
+                </p>
               </div>
             ) : null}
 
             <label className="block text-sm font-semibold">
-              Mode
-              <select
-                className="focus-ring mt-2 h-11 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm"
-                onChange={(event) =>
-                  setMode(event.target.value as "prompt" | "manual" | "both")
-                }
-                value={mode}
-              >
-                <option value="both">Prompt + categories</option>
-                <option value="prompt">Prompt only</option>
-                <option value="manual">Categories only</option>
-              </select>
+              Max playlists
+              <input
+                className="field focus-ring mt-2 h-11 w-full px-3 text-sm"
+                inputMode="numeric"
+                min={1}
+                onChange={(event) => setMaxPlaylists(event.target.value)}
+                placeholder="No limit"
+                type="number"
+                value={maxPlaylists}
+              />
+              <span className="mt-1 block text-xs font-normal text-[var(--muted)]">
+                Smaller categories get merged into a &ldquo;Mixed&rdquo; playlist.
+              </span>
             </label>
 
             <label className="block text-sm font-semibold">
-              Prompt
-              <textarea
-                className="focus-ring mt-2 min-h-24 w-full resize-y rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm leading-6"
-                onChange={(event) => setPrompt(event.target.value)}
-                value={prompt}
+              Max songs per playlist
+              <input
+                className="field focus-ring mt-2 h-11 w-full px-3 text-sm"
+                inputMode="numeric"
+                min={1}
+                onChange={(event) => setMaxPerPlaylist(event.target.value)}
+                placeholder="No limit"
+                type="number"
+                value={maxPerPlaylist}
               />
+              <span className="mt-1 block text-xs font-normal text-[var(--muted)]">
+                Overflow becomes numbered parts, e.g. &ldquo;Energy (2)&rdquo;.
+              </span>
             </label>
 
             <label className="block text-sm font-semibold">
-              Categories
-              <textarea
-                className="focus-ring mt-2 min-h-24 w-full resize-y rounded-md border border-[var(--line)] bg-white px-3 py-2 text-sm leading-6"
-                onChange={(event) => setManualCategories(event.target.value)}
-                value={manualCategories}
+              Playlist name prefix
+              <input
+                className="field focus-ring mt-2 h-11 w-full px-3 text-sm"
+                onChange={(event) => setPlaylistPrefix(event.target.value)}
+                value={playlistPrefix}
               />
+              <span className="mt-1 block text-xs font-normal text-[var(--muted)]">
+                e.g. “{playlistPrefix.trim()} Late Night”
+              </span>
             </label>
-
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-1">
-              <label className="block text-sm font-semibold">
-                Duplicates
-                <select
-                  className="focus-ring mt-2 h-11 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm"
-                  onChange={(event) =>
-                    setDuplicatePolicy(event.target.value as "single" | "overlap")
-                  }
-                  value={duplicatePolicy}
-                >
-                  <option value="single">One playlist</option>
-                  <option value="overlap">Allow overlap</option>
-                </select>
-              </label>
-
-              <label className="block text-sm font-semibold">
-                Prefix
-                <input
-                  className="focus-ring mt-2 h-11 w-full rounded-md border border-[var(--line)] bg-white px-3 text-sm"
-                  onChange={(event) => setPlaylistPrefix(event.target.value)}
-                  value={playlistPrefix}
-                />
-              </label>
-            </div>
 
             <button
-              className="focus-ring inline-flex h-11 w-full items-center justify-center gap-2 rounded-md bg-[var(--accent)] px-4 font-semibold text-white transition hover:bg-[var(--accent-strong)]"
-              disabled={!selectedPlaylist || working}
+              className="focus-ring inline-flex h-12 w-full items-center justify-center gap-2 rounded-full bg-[var(--accent)] px-4 font-bold text-[#04140a] shadow-[0_0_24px_rgba(29,185,84,0.3)] transition hover:bg-[var(--accent-strong)]"
+              disabled={selectedPlaylists.length === 0 || working}
               onClick={generateSplit}
               type="button"
             >
               {working ? (
                 <Loader2 aria-hidden="true" className="animate-spin" size={18} />
               ) : (
-                <Send aria-hidden="true" size={18} />
+                <Sparkles aria-hidden="true" size={18} />
               )}
-              Generate preview
+              {working ? "Thinking…" : "Generate preview"}
+            </button>
+
+            {working && progress ? (
+              <div className="rise rounded-xl border border-[var(--line)] bg-[var(--panel-soft)] p-3">
+                <div className="flex items-center gap-2 text-sm">
+                  <Loader2
+                    aria-hidden="true"
+                    className="shrink-0 animate-spin text-[var(--accent-strong)]"
+                    size={15}
+                  />
+                  <span className="min-w-0 flex-1 leading-5">
+                    {progress.message}
+                  </span>
+                </div>
+                {typeof progress.current === "number" &&
+                typeof progress.total === "number" &&
+                progress.total > 0 ? (
+                  <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-[#0e1412]">
+                    <div
+                      className="h-full rounded-full bg-[var(--accent)] transition-all duration-500"
+                      style={{
+                        width: `${Math.round((progress.current / progress.total) * 100)}%`
+                      }}
+                    />
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="mt-5 flex items-center justify-between border-t border-[var(--line)] pt-4">
+          <button
+            className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:border-[#3a4740] hover:text-[var(--foreground)]"
+            disabled={working}
+            onClick={() => goToStep(0)}
+            type="button"
+          >
+            <ArrowLeft aria-hidden="true" size={15} />
+            Back
+          </button>
+          {split ? (
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
+              disabled={working}
+              onClick={() => goToStep(2)}
+              type="button"
+            >
+              Review current preview
+              <ArrowRight aria-hidden="true" size={15} />
+            </button>
+          ) : null}
+        </div>
+      </section>
+      ) : null}
+
+      {/* Step 3: preview */}
+      {step === 2 ? (
+      <section
+        className={`panel p-5 ${direction === "forward" ? "slide-forward" : "slide-back"}`}
+        key="step-2"
+      >
+        <div className="flex flex-col justify-between gap-3 border-b border-[var(--line)] pb-4 md:flex-row md:items-center">
+          <div>
+            <h2 className="flex items-center gap-2 text-lg font-bold">
+              <span className="grid h-7 w-7 place-items-center rounded-full bg-[var(--accent-soft)] text-sm font-black text-[var(--accent-strong)]">
+                3
+              </span>
+              Review and ship
+              {dirty ? (
+                <span className="rounded-full bg-[#3a2e12] px-2 py-0.5 text-xs font-semibold text-[#e8a13c]">
+                  Unsaved changes
+                </span>
+              ) : null}
+              {split?.status === "completed" ? (
+                <span className="rounded-full bg-[var(--accent-soft)] px-2 py-0.5 text-xs font-semibold text-[var(--accent-strong)]">
+                  Created in Spotify
+                </span>
+              ) : null}
+            </h2>
+            <p className="mt-1 text-sm text-[var(--muted)]">
+              {split
+                ? `${split.categories.length} playlists · ${totalAssigned} tracks — drag songs between playlists or use the move menu.`
+                : "Generate a split to review the tracks."}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {split ? (
+              <div className="relative">
+                <Search
+                  aria-hidden="true"
+                  className="absolute left-3 top-1/2 -translate-y-1/2 text-[var(--muted)]"
+                  size={14}
+                />
+                <input
+                  className="field focus-ring h-10 w-44 pl-8 pr-3 text-sm"
+                  onChange={(event) => setTrackFilter(event.target.value)}
+                  placeholder="Filter tracks…"
+                  value={trackFilter}
+                />
+              </div>
+            ) : null}
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
+              disabled={!split}
+              onClick={openPlanText}
+              title="View the whole plan as plain text"
+              type="button"
+            >
+              <FileText aria-hidden="true" size={16} />
+              As text
+            </button>
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
+              disabled={
+                !split ||
+                saving ||
+                executing ||
+                isLocked ||
+                merging ||
+                (split?.categories.length ?? 0) < 2
+              }
+              onClick={mergeSimilar}
+              title="Use the AI agent to merge near-duplicate playlists"
+              type="button"
+            >
+              {merging ? (
+                <Loader2 aria-hidden="true" className="animate-spin" size={16} />
+              ) : (
+                <Layers aria-hidden="true" size={16} />
+              )}
+              Merge similar
+            </button>
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
+              disabled={!split || saving || executing || isLocked}
+              onClick={addCategory}
+              type="button"
+            >
+              <FolderPlus aria-hidden="true" size={16} />
+              Add playlist
+            </button>
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
+              disabled={!split || saving || executing || isLocked || !dirty}
+              onClick={savePreview}
+              type="button"
+            >
+              {saving ? (
+                <Loader2 aria-hidden="true" className="animate-spin" size={16} />
+              ) : (
+                <Save aria-hidden="true" size={16} />
+              )}
+              Save
+            </button>
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[var(--accent)] px-4 text-sm font-bold text-[#04140a] transition hover:bg-[var(--accent-strong)]"
+              disabled={!split || executing || saving || isLocked}
+              onClick={executeSplit}
+              type="button"
+            >
+              {executing ? (
+                <Loader2 aria-hidden="true" className="animate-spin" size={16} />
+              ) : split?.status === "completed" ? (
+                <Check aria-hidden="true" size={16} />
+              ) : (
+                <Play aria-hidden="true" size={16} />
+              )}
+              {split?.status === "completed" ? "Created" : "Create in Spotify"}
             </button>
           </div>
-        </aside>
+        </div>
 
-        <section className="min-w-0 rounded-lg border border-[var(--line)] bg-white p-4 shadow-sm">
-          <div className="flex flex-col justify-between gap-3 border-b border-[var(--line)] pb-4 md:flex-row md:items-center">
+        {!split ? (
+          <div className="mt-4 grid min-h-72 place-items-center rounded-xl border border-dashed border-[var(--line)] p-6 text-center">
             <div>
-              <h2 className="text-xl font-bold">Editable preview</h2>
-              <p className="mt-1 text-sm text-[var(--muted)]">
-                {split
-                  ? `${split.categories.length} playlists, ${totalAssigned} assignments`
-                  : "Generate a split to review the tracks."}
+              <Music2
+                aria-hidden="true"
+                className="mx-auto text-[var(--muted)]"
+                size={32}
+              />
+              <p className="mt-3 text-sm text-[var(--muted)]">
+                The editable preview will appear here.
               </p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <button
-                className="focus-ring inline-flex h-10 items-center gap-2 rounded-md border border-[var(--line)] bg-white px-3 text-sm font-semibold transition hover:border-[var(--accent)]"
-                disabled={!split || saving || executing}
-                onClick={savePreview}
-                type="button"
-              >
-                {saving ? (
-                  <Loader2 aria-hidden="true" className="animate-spin" size={16} />
-                ) : (
-                  <Save aria-hidden="true" size={16} />
-                )}
-                Save
-              </button>
-              <button
-                className="focus-ring inline-flex h-10 items-center gap-2 rounded-md bg-[var(--ink)] px-3 text-sm font-semibold text-white transition hover:bg-[#18345c]"
-                disabled={!split || executing || saving || split.status === "completed"}
-                onClick={executeSplit}
-                type="button"
-              >
-                {executing ? (
-                  <Loader2 aria-hidden="true" className="animate-spin" size={16} />
-                ) : split?.status === "completed" ? (
-                  <Check aria-hidden="true" size={16} />
-                ) : (
-                  <Play aria-hidden="true" size={16} />
-                )}
-                Create
-              </button>
-            </div>
           </div>
+        ) : (
+          <div className="mt-4 grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {split.categories.map((category, categoryIndex) => {
+              const color = categoryColor(categoryIndex);
+              const totalMs = category.assignments.reduce(
+                (total, assignment) => total + (assignment.durationMs ?? 0),
+                0
+              );
+              const visibleAssignments = filter
+                ? category.assignments.filter(
+                    (assignment) =>
+                      assignment.trackName.toLowerCase().includes(filter) ||
+                      assignment.artists.toLowerCase().includes(filter)
+                  )
+                : category.assignments;
+              const shownCount = visibleCounts[category.id] ?? 30;
+              const shownAssignments = visibleAssignments.slice(0, shownCount);
+              const hiddenCount = visibleAssignments.length - shownAssignments.length;
 
-          {!split ? (
-            <div className="flex min-h-96 items-center justify-center rounded-md bg-[#f9fbf8] p-6 text-center text-sm text-[var(--muted)]">
-              Select a playlist and generate the preview.
-            </div>
-          ) : (
-            <div className="mt-4 grid gap-4 xl:grid-cols-2">
-              {split.categories.map((category) => (
+              return (
                 <article
-                  className="rounded-md border border-[var(--line)] bg-[#fcfdfb]"
+                  className={`overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] transition ${
+                    dropCategoryId === category.id ? "drop-target" : ""
+                  }`}
                   key={category.id}
+                  onDragLeave={(event) => {
+                    if (
+                      event.currentTarget.contains(event.relatedTarget as Node)
+                    ) {
+                      return;
+                    }
+                    setDropCategoryId((current) =>
+                      current === category.id ? null : current
+                    );
+                  }}
+                  onDragOver={(event) => {
+                    if (dragging && !isLocked) {
+                      event.preventDefault();
+                      setDropCategoryId(category.id);
+                    }
+                  }}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    setDropCategoryId(null);
+                    if (dragging) {
+                      moveAssignment(
+                        dragging.sourceCategoryId,
+                        dragging.assignmentId,
+                        category.id
+                      );
+                      setDragging(null);
+                    }
+                  }}
                 >
+                  <div
+                    className="h-1.5"
+                    style={{
+                      background: `linear-gradient(90deg, ${color}, transparent)`
+                    }}
+                  />
                   <div className="border-b border-[var(--line)] p-3">
                     <div className="flex items-center gap-2">
                       <input
-                        className="focus-ring h-10 min-w-0 flex-1 rounded-md border border-[var(--line)] bg-white px-3 font-semibold"
+                        className="field focus-ring h-10 min-w-0 flex-1 px-3 font-semibold"
+                        disabled={isLocked}
                         onChange={(event) =>
                           updateCategoryName(category.id, event.target.value)
                         }
@@ -573,79 +1572,230 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                       />
                       {category.spotifyUrl ? (
                         <a
-                          className="focus-ring inline-flex h-10 w-10 items-center justify-center rounded-md border border-[var(--line)] bg-white text-[var(--ink)]"
+                          className="focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] text-[var(--accent-strong)] transition hover:border-[var(--accent)]"
                           href={category.spotifyUrl}
                           rel="noreferrer"
                           target="_blank"
                           title="Open in Spotify"
                         >
-                          <ExternalLink aria-hidden="true" size={18} />
+                          <ExternalLink aria-hidden="true" size={16} />
                         </a>
                       ) : null}
+                      {!isLocked ? (
+                        <button
+                          className="focus-ring inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-[var(--line)] text-[var(--danger)] transition hover:border-[var(--danger)]"
+                          onClick={() => removeCategory(category.id)}
+                          title="Delete playlist from plan"
+                          type="button"
+                        >
+                          <Trash2 aria-hidden="true" size={15} />
+                        </button>
+                      ) : null}
                     </div>
-                    <p className="mt-2 text-sm text-[var(--muted)]">
+                    <p className="mt-2 text-xs text-[var(--muted)]">
                       {category.assignments.length} tracks
+                      {totalMs > 0 ? ` · ${formatDuration(totalMs)}` : ""}
+                      {category.description ? ` — ${category.description}` : ""}
                     </p>
                   </div>
 
-                  <div className="max-h-[520px] overflow-auto p-2">
-                    {category.assignments.length === 0 ? (
-                      <p className="p-3 text-sm text-[var(--muted)]">No tracks.</p>
+                  <div className="max-h-[440px] overflow-y-auto p-2">
+                    {visibleAssignments.length === 0 ? (
+                      <p className="p-3 text-center text-sm text-[var(--muted)]">
+                        {filter
+                          ? "No matches here."
+                          : "Empty — drag tracks in."}
+                      </p>
                     ) : (
-                      category.assignments.map((assignment) => (
-                        <div
-                          className="mb-2 grid gap-2 rounded-md border border-[var(--line)] bg-white p-2"
-                          key={assignment.id}
-                        >
-                          <div className="min-w-0">
-                            <p className="truncate text-sm font-semibold">
-                              {assignment.trackName}
-                            </p>
-                            <p className="truncate text-xs text-[var(--muted)]">
-                              {assignment.artists}
-                              {assignment.album ? ` - ${assignment.album}` : ""}
-                            </p>
-                          </div>
+                      shownAssignments.map((assignment) => {
+                        const menuOpen =
+                          moveMenu?.categoryId === category.id &&
+                          moveMenu?.assignmentId === assignment.id;
 
-                          <div className="grid grid-cols-[1fr_40px] gap-2">
-                            <select
-                              className="focus-ring h-9 min-w-0 rounded-md border border-[var(--line)] bg-white px-2 text-xs"
-                              onChange={(event) =>
-                                moveAssignment(
-                                  category.id,
-                                  assignment.id,
-                                  event.target.value
-                                )
-                              }
-                              value={category.id}
-                            >
-                              {split.categories.map((target) => (
-                                <option key={target.id} value={target.id}>
-                                  {target.name}
-                                </option>
-                              ))}
-                            </select>
-                            <button
-                              className="focus-ring inline-flex h-9 items-center justify-center rounded-md border border-[var(--line)] bg-white text-[#9b1c1c] transition hover:border-[#9b1c1c]"
-                              onClick={() =>
-                                removeAssignment(category.id, assignment.id)
-                              }
-                              title="Remove"
-                              type="button"
-                            >
-                              <Trash2 aria-hidden="true" size={16} />
-                            </button>
+                        return (
+                          <div
+                            className={`relative mb-1.5 flex items-center gap-2 rounded-lg border border-transparent bg-[var(--panel-soft)] p-2 transition hover:border-[var(--line)] ${
+                              dragging?.assignmentId === assignment.id
+                                ? "dragging"
+                                : ""
+                            }`}
+                            draggable={!isLocked}
+                            key={assignment.id}
+                            onDragEnd={() => {
+                              setDragging(null);
+                              setDropCategoryId(null);
+                            }}
+                            onDragStart={(event) => {
+                              event.dataTransfer.effectAllowed = "move";
+                              setDragging({
+                                assignmentId: assignment.id,
+                                sourceCategoryId: category.id
+                              });
+                            }}
+                          >
+                            {!isLocked ? (
+                              <GripVertical
+                                aria-hidden="true"
+                                className="shrink-0 cursor-grab text-[var(--muted)]"
+                                size={14}
+                              />
+                            ) : null}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate text-sm font-semibold">
+                                {assignment.trackName}
+                              </p>
+                              <p className="truncate text-xs text-[var(--muted)]">
+                                {assignment.artists}
+                                {assignment.album ? ` · ${assignment.album}` : ""}
+                              </p>
+                            </div>
+                            {!isLocked ? (
+                              <>
+                                <button
+                                  aria-expanded={menuOpen}
+                                  className={`focus-ring shrink-0 rounded-md p-1.5 transition ${
+                                    menuOpen
+                                      ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                                      : "text-[var(--muted)] hover:text-[var(--foreground)]"
+                                  }`}
+                                  onClick={() =>
+                                    setMoveMenu(
+                                      menuOpen
+                                        ? null
+                                        : {
+                                            categoryId: category.id,
+                                            assignmentId: assignment.id
+                                          }
+                                    )
+                                  }
+                                  title="Move to another playlist"
+                                  type="button"
+                                >
+                                  <ArrowRightLeft aria-hidden="true" size={14} />
+                                </button>
+                                <button
+                                  className="focus-ring shrink-0 rounded-md p-1.5 text-[var(--muted)] transition hover:text-[var(--danger)]"
+                                  onClick={() =>
+                                    removeAssignment(category.id, assignment.id)
+                                  }
+                                  title="Remove from plan"
+                                  type="button"
+                                >
+                                  <X aria-hidden="true" size={14} />
+                                </button>
+                                {menuOpen ? (
+                                  <div className="rise absolute right-2 top-full z-20 mt-1 w-56 max-w-[calc(100%-1rem)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel-soft)] shadow-2xl">
+                                    <p className="border-b border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
+                                      Move to…
+                                    </p>
+                                    <div className="max-h-52 overflow-y-auto p-1">
+                                      {split.categories
+                                        .filter(
+                                          (target) => target.id !== category.id
+                                        )
+                                        .map((target) => (
+                                          <button
+                                            className="focus-ring flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-semibold transition hover:bg-[var(--accent-soft)]"
+                                            key={target.id}
+                                            onClick={() => {
+                                              moveAssignment(
+                                                category.id,
+                                                assignment.id,
+                                                target.id
+                                              );
+                                              setMoveMenu(null);
+                                            }}
+                                            type="button"
+                                          >
+                                            <span
+                                              aria-hidden="true"
+                                              className="h-2.5 w-2.5 shrink-0 rounded-full"
+                                              style={{
+                                                background: categoryColor(
+                                                  split.categories.findIndex(
+                                                    (item) =>
+                                                      item.id === target.id
+                                                  )
+                                                )
+                                              }}
+                                            />
+                                            <span className="min-w-0 flex-1 truncate">
+                                              {target.name}
+                                            </span>
+                                            <span className="shrink-0 text-xs font-normal text-[var(--muted)]">
+                                              {target.assignments.length}
+                                            </span>
+                                          </button>
+                                        ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </>
+                            ) : null}
                           </div>
-                        </div>
-                      ))
+                        );
+                      })
                     )}
+                    {hiddenCount > 0 ? (
+                      <button
+                        className="focus-ring mt-1 w-full rounded-lg border border-dashed border-[var(--line)] py-2 text-sm font-semibold text-[var(--muted)] transition hover:border-[var(--accent)] hover:text-[var(--foreground)]"
+                        onClick={() =>
+                          setVisibleCounts((current) => ({
+                            ...current,
+                            [category.id]: shownCount + 100
+                          }))
+                        }
+                        type="button"
+                      >
+                        Show more ({hiddenCount} hidden)
+                      </button>
+                    ) : null}
                   </div>
                 </article>
-              ))}
-            </div>
-          )}
-        </section>
+              );
+            })}
+          </div>
+        )}
+
+        <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4">
+          <button
+            className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:border-[#3a4740] hover:text-[var(--foreground)]"
+            disabled={executing || saving}
+            onClick={() => goToStep(1)}
+            type="button"
+          >
+            <ArrowLeft aria-hidden="true" size={15} />
+            Back
+          </button>
+          <button
+            className={`focus-ring inline-flex h-10 items-center gap-2 rounded-full px-4 text-sm font-bold transition ${
+              split?.status === "completed"
+                ? "bg-[var(--accent)] text-[#04140a] hover:bg-[var(--accent-strong)]"
+                : "border border-[var(--line)] font-semibold hover:border-[var(--accent)]"
+            }`}
+            disabled={executing || saving}
+            onClick={() => {
+              if (split && split.status !== "completed") {
+                setConfirmRequest({
+                  title: "Start a new split",
+                  message:
+                    "Discard this preview and start over? Nothing has been created in Spotify yet.",
+                  confirmLabel: "Start over",
+                  tone: "accent",
+                  onConfirm: restart
+                });
+                return;
+              }
+              restart();
+            }}
+            type="button"
+          >
+            <RotateCcw aria-hidden="true" size={15} />
+            Start a new split
+          </button>
+        </div>
       </section>
+      ) : null}
     </main>
   );
 }

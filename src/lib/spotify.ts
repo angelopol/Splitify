@@ -20,17 +20,23 @@ type SpotifyPlaylistItem = {
   tracks?: { total: number };
 };
 
+type SpotifyTrackObject = {
+  id: string | null;
+  uri: string;
+  name: string;
+  type: string;
+  is_local?: boolean;
+  duration_ms?: number;
+  album?: { name?: string };
+  artists?: { id?: string | null; name: string }[];
+};
+
 type SpotifyTrackItem = {
-  track: {
-    id: string | null;
-    uri: string;
-    name: string;
-    type: string;
-    is_local?: boolean;
-    duration_ms?: number;
-    album?: { name?: string };
-    artists?: { name: string }[];
-  } | null;
+  is_local?: boolean;
+  /** Legacy Web API shape (`/playlists/{id}/tracks`). */
+  track?: SpotifyTrackObject | null;
+  /** New Web API shape (`/playlists/{id}/items`). */
+  item?: SpotifyTrackObject | null;
 };
 
 type SpotifyProfile = {
@@ -190,15 +196,6 @@ export async function getCurrentSpotifyProfile(userId: string) {
   return spotifyFetch<SpotifyProfile>(userId, "/me");
 }
 
-async function getPlaylistTrackTotal(userId: string, playlistId: string) {
-  const page = await spotifyFetch<{ total?: number }>(
-    userId,
-    `/playlists/${playlistId}/tracks?limit=1&fields=total`
-  );
-
-  return page.total ?? 0;
-}
-
 export async function listUserPlaylists(userId: string) {
   const playlists: SpotifyPlaylist[] = [];
   let next: string | null = `${SPOTIFY_API_BASE}/me/playlists?limit=50`;
@@ -220,22 +217,7 @@ export async function listUserPlaylists(userId: string) {
     next = page.next;
   }
 
-  const resolvedCounts = await Promise.allSettled(
-    playlists.map((playlist) => getPlaylistTrackTotal(userId, playlist.id))
-  );
-
-  return playlists.map((playlist, index) => {
-    const resolved = resolvedCounts[index];
-
-    if (resolved?.status !== "fulfilled") {
-      return playlist;
-    }
-
-    return {
-      ...playlist,
-      trackCount: resolved.value
-    };
-  });
+  return playlists;
 }
 
 export async function getPlaylistTracks(
@@ -243,17 +225,35 @@ export async function getPlaylistTracks(
   playlistId: string
 ): Promise<NormalizedTrack[]> {
   const tracks: NormalizedTrack[] = [];
-  const fields =
-    "items(track(id,uri,name,type,is_local,duration_ms,album(name),artists(name))),next,total,limit,offset";
-  let next: string | null = `${SPOTIFY_API_BASE}/playlists/${playlistId}/tracks?limit=100&fields=${encodeURIComponent(fields)}`;
+
+  // Newer Spotify apps must use /items; /tracks returns 403 for them.
+  // Older apps may not have /items yet, so fall back once if it fails.
+  let next: string | null = `${SPOTIFY_API_BASE}/playlists/${playlistId}/items?limit=100`;
+  let triedLegacy = false;
 
   while (next) {
-    const page: SpotifyPage<SpotifyTrackItem> =
-      await spotifyFetch<SpotifyPage<SpotifyTrackItem>>(userId, next);
+    let page: SpotifyPage<SpotifyTrackItem>;
 
-    for (const item of page.items) {
-      const track = item.track;
-      if (!track || !track.id || track.type !== "track" || track.is_local) {
+    try {
+      page = await spotifyFetch<SpotifyPage<SpotifyTrackItem>>(userId, next);
+    } catch (error) {
+      if (!triedLegacy && tracks.length === 0) {
+        triedLegacy = true;
+        next = `${SPOTIFY_API_BASE}/playlists/${playlistId}/tracks?limit=100`;
+        continue;
+      }
+      throw error;
+    }
+
+    for (const entry of page.items) {
+      const track = entry.item ?? entry.track;
+      if (
+        !track ||
+        !track.id ||
+        track.type !== "track" ||
+        entry.is_local ||
+        track.is_local
+      ) {
         continue;
       }
 
@@ -262,6 +262,10 @@ export async function getPlaylistTracks(
         uri: track.uri,
         name: track.name,
         artists: track.artists?.map((artist) => artist.name) ?? [],
+        artistIds:
+          track.artists
+            ?.map((artist) => artist.id)
+            .filter((id): id is string => Boolean(id)) ?? [],
         album: track.album?.name,
         durationMs: track.duration_ms,
         sourceOrder: tracks.length
@@ -272,6 +276,33 @@ export async function getPlaylistTracks(
   }
 
   return tracks;
+}
+
+export async function getArtistsGenres(
+  userId: string,
+  artistIds: string[]
+): Promise<Map<string, string[]>> {
+  const genresById = new Map<string, string[]>();
+  const uniqueIds = Array.from(new Set(artistIds));
+
+  for (const chunk of chunkSpotifyUris(uniqueIds, 50)) {
+    try {
+      const response = await spotifyFetch<{
+        artists?: ({ id: string; genres?: string[] } | null)[];
+      }>(userId, `/artists?ids=${chunk.join(",")}`);
+
+      for (const artist of response.artists ?? []) {
+        if (artist) {
+          genresById.set(artist.id, artist.genres ?? []);
+        }
+      }
+    } catch {
+      // Genres are an enrichment, never a blocker.
+      break;
+    }
+  }
+
+  return genresById;
 }
 
 export async function unfollowPlaylist(userId: string, playlistId: string) {
@@ -310,12 +341,31 @@ export async function addTracksToPlaylist(
   playlistId: string,
   uris: string[]
 ) {
+  // Same /tracks → /items migration as getPlaylistTracks.
+  let endpoint = `/playlists/${playlistId}/tracks`;
+  let triedItems = false;
+
   for (const chunk of chunkSpotifyUris(uris)) {
-    await spotifyFetch(userId, `/playlists/${playlistId}/tracks`, {
-      method: "POST",
-      body: JSON.stringify({
-        uris: chunk
-      })
-    });
+    try {
+      await spotifyFetch(userId, endpoint, {
+        method: "POST",
+        body: JSON.stringify({
+          uris: chunk
+        })
+      });
+    } catch (error) {
+      if (triedItems) {
+        throw error;
+      }
+
+      triedItems = true;
+      endpoint = `/playlists/${playlistId}/items`;
+      await spotifyFetch(userId, endpoint, {
+        method: "POST",
+        body: JSON.stringify({
+          uris: chunk
+        })
+      });
+    }
   }
 }

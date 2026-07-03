@@ -7,6 +7,7 @@ import {
   ArrowRightLeft,
   Check,
   CheckCircle2,
+  ChevronDown,
   Copy,
   ExternalLink,
   FileText,
@@ -265,7 +266,9 @@ export function Dashboard({ userName }: { userName?: string | null }) {
   const [maxRepeats, setMaxRepeats] = useState("3");
   const [unlimitedRepeats, setUnlimitedRepeats] = useState(false);
   const [maxPerPlaylist, setMaxPerPlaylist] = useState("");
+  const [minPerPlaylist, setMinPerPlaylist] = useState("");
   const [maxPlaylists, setMaxPlaylists] = useState("10");
+  const [advancedOpen, setAdvancedOpen] = useState(false);
   const [progress, setProgress] = useState<{
     message: string;
     current?: number;
@@ -278,6 +281,8 @@ export function Dashboard({ userName }: { userName?: string | null }) {
   } | null>(null);
   const [merging, setMerging] = useState(false);
   const [planText, setPlanText] = useState<string | null>(null);
+  const [mergeMode, setMergeMode] = useState(false);
+  const [mergeSelect, setMergeSelect] = useState<string[]>([]);
   const [prompt, setPrompt] = useState(PROMPT_PRESETS[0]);
   const [manualCategories, setManualCategories] = useState(
     "Late Night\nEnergy\nOld School"
@@ -459,6 +464,10 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             maxPlaylists:
               Number.parseInt(maxPlaylists, 10) > 0
                 ? Number.parseInt(maxPlaylists, 10)
+                : null,
+            minTracksPerPlaylist:
+              Number.parseInt(minPerPlaylist, 10) > 0
+                ? Number.parseInt(minPerPlaylist, 10)
                 : null,
             progressToken
           })
@@ -756,7 +765,16 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     try {
       const data = await readJson<{ split: SplitRun }>(
         await fetch(`/api/splits/${split.id}/consolidate`, {
-          method: "POST"
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            minTracksPerPlaylist:
+              Number.parseInt(minPerPlaylist, 10) > 0
+                ? Number.parseInt(minPerPlaylist, 10)
+                : null
+          })
         })
       );
 
@@ -777,6 +795,66 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     } finally {
       setMerging(false);
     }
+  }
+
+  function toggleMergeSelection(categoryId: string) {
+    setMergeSelect((current) =>
+      current.includes(categoryId)
+        ? current.filter((id) => id !== categoryId)
+        : [...current, categoryId]
+    );
+  }
+
+  function mergeSelectedCategories() {
+    if (!split || mergeSelect.length < 2) {
+      return;
+    }
+
+    const selectedSet = new Set(mergeSelect);
+    // Target keeps the name of the first selected playlist (plan order).
+    const ordered = split.categories.filter((category) =>
+      selectedSet.has(category.id)
+    );
+    const target = ordered[0];
+    const seenTrackIds = new Set(
+      target.assignments.map((assignment) => assignment.trackId)
+    );
+    const mergedAssignments = [...target.assignments];
+
+    for (const category of ordered.slice(1)) {
+      for (const assignment of category.assignments) {
+        if (!seenTrackIds.has(assignment.trackId)) {
+          seenTrackIds.add(assignment.trackId);
+          mergedAssignments.push(assignment);
+        }
+      }
+    }
+
+    markDirty();
+    setSplit((current) =>
+      current
+        ? {
+            ...current,
+            categories: current.categories
+              .filter(
+                (category) =>
+                  category.id === target.id || !selectedSet.has(category.id)
+              )
+              .map((category) =>
+                category.id === target.id
+                  ? { ...category, assignments: mergedAssignments }
+                  : category
+              )
+          }
+        : current
+    );
+    setMergeSelect([]);
+    setMergeMode(false);
+    setVisibleCounts({});
+    notify(
+      "success",
+      `Merged ${ordered.length} playlists into "${target.name}".`
+    );
   }
 
   function openPlanText() {
@@ -1226,6 +1304,23 @@ export function Dashboard({ userName }: { userName?: string | null }) {
               </div>
             </div>
 
+            <div className="overflow-hidden rounded-xl border border-[var(--line)]">
+              <button
+                aria-expanded={advancedOpen}
+                className="focus-ring flex w-full items-center justify-between gap-2 bg-[var(--panel-soft)] px-3 py-2.5 text-sm font-semibold transition hover:text-[var(--accent-strong)]"
+                onClick={() => setAdvancedOpen((current) => !current)}
+                type="button"
+              >
+                Advanced settings
+                <ChevronDown
+                  aria-hidden="true"
+                  className={`transition-transform ${advancedOpen ? "rotate-180" : ""}`}
+                  size={16}
+                />
+              </button>
+
+              {advancedOpen ? (
+                <div className="space-y-4 border-t border-[var(--line)] p-3">
             {duplicatePolicy === "overlap" ? (
               <div>
                 <p className="text-sm font-semibold">Max playlists per song</p>
@@ -1288,6 +1383,25 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                 Overflow becomes numbered parts, e.g. &ldquo;Energy (2)&rdquo;.
               </span>
             </label>
+
+            <label className="block text-sm font-semibold">
+              Min songs per playlist
+              <input
+                className="field focus-ring mt-2 h-11 w-full px-3 text-sm"
+                inputMode="numeric"
+                min={1}
+                onChange={(event) => setMinPerPlaylist(event.target.value)}
+                placeholder="No minimum"
+                type="number"
+                value={minPerPlaylist}
+              />
+              <span className="mt-1 block text-xs font-normal text-[var(--muted)]">
+                Soft target — the agent may break it when nothing fits.
+              </span>
+            </label>
+                </div>
+              ) : null}
+            </div>
 
             <label className="block text-sm font-semibold">
               Playlist name prefix
@@ -1445,7 +1559,31 @@ export function Dashboard({ userName }: { userName?: string | null }) {
               ) : (
                 <Layers aria-hidden="true" size={16} />
               )}
-              Merge similar
+              AI merge
+            </button>
+            <button
+              className={`focus-ring inline-flex h-10 items-center gap-2 rounded-full border px-4 text-sm font-semibold transition ${
+                mergeMode
+                  ? "border-[var(--accent)] bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                  : "border-[var(--line)] hover:border-[var(--accent)]"
+              }`}
+              disabled={
+                !split ||
+                saving ||
+                executing ||
+                isLocked ||
+                merging ||
+                (split?.categories.length ?? 0) < 2
+              }
+              onClick={() => {
+                setMergeMode((current) => !current);
+                setMergeSelect([]);
+              }}
+              title="Pick the playlists to merge yourself"
+              type="button"
+            >
+              <Check aria-hidden="true" size={16} />
+              Select &amp; merge
             </button>
             <button
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
@@ -1501,6 +1639,35 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             </div>
           </div>
         ) : (
+          <>
+          {mergeMode ? (
+            <div className="rise mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-[var(--accent)] bg-[var(--accent-soft)] px-4 py-3">
+              <p className="min-w-0 flex-1 text-sm font-semibold">
+                {mergeSelect.length < 2
+                  ? "Tick at least two playlists to merge. The first one keeps its name."
+                  : `${mergeSelect.length} playlists selected — the merged playlist keeps the first one's name.`}
+              </p>
+              <button
+                className="focus-ring inline-flex h-9 items-center gap-2 rounded-full bg-[var(--accent)] px-4 text-sm font-bold text-[#04140a] transition hover:bg-[var(--accent-strong)]"
+                disabled={mergeSelect.length < 2}
+                onClick={mergeSelectedCategories}
+                type="button"
+              >
+                <Layers aria-hidden="true" size={14} />
+                Merge {mergeSelect.length > 1 ? mergeSelect.length : ""}
+              </button>
+              <button
+                className="focus-ring inline-flex h-9 items-center rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                onClick={() => {
+                  setMergeMode(false);
+                  setMergeSelect([]);
+                }}
+                type="button"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : null}
           <div className="mt-4 grid items-start gap-4 md:grid-cols-2 xl:grid-cols-3">
             {split.categories.map((category, categoryIndex) => {
               const color = categoryColor(categoryIndex);
@@ -1521,9 +1688,11 @@ export function Dashboard({ userName }: { userName?: string | null }) {
 
               return (
                 <article
-                  className={`overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel)] transition ${
-                    dropCategoryId === category.id ? "drop-target" : ""
-                  }`}
+                  className={`overflow-hidden rounded-xl border bg-[var(--panel)] transition ${
+                    mergeMode && mergeSelect.includes(category.id)
+                      ? "border-[var(--accent)] shadow-[0_0_18px_rgba(29,185,84,0.2)]"
+                      : "border-[var(--line)]"
+                  } ${dropCategoryId === category.id ? "drop-target" : ""}`}
                   key={category.id}
                   onDragLeave={(event) => {
                     if (
@@ -1562,6 +1731,21 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                   />
                   <div className="border-b border-[var(--line)] p-3">
                     <div className="flex items-center gap-2">
+                      {mergeMode ? (
+                        <button
+                          aria-pressed={mergeSelect.includes(category.id)}
+                          className={`focus-ring grid h-10 w-10 shrink-0 place-items-center rounded-lg border transition ${
+                            mergeSelect.includes(category.id)
+                              ? "border-[var(--accent)] bg-[var(--accent)] text-[#04140a]"
+                              : "border-[var(--line)] text-transparent hover:border-[var(--accent)]"
+                          }`}
+                          onClick={() => toggleMergeSelection(category.id)}
+                          title="Select for merge"
+                          type="button"
+                        >
+                          <Check aria-hidden="true" size={16} />
+                        </button>
+                      ) : null}
                       <input
                         className="field focus-ring h-10 min-w-0 flex-1 px-3 font-semibold"
                         disabled={isLocked}
@@ -1755,6 +1939,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
               );
             })}
           </div>
+          </>
         )}
 
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-[var(--line)] pt-4">

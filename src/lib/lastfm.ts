@@ -259,10 +259,24 @@ export async function fillGenresFromLastFm(
       onProgress?.(`Looking up song genres on Last.fm (${done}/${total})…`)
   );
 
+  // Already-refined songs apply their cached individual tags for free.
+  for (const track of albumTracks) {
+    const cachedTags = trackCache.get(trackKey(track));
+    if (cachedTags && cachedTags.length > 0) {
+      track.genres = cachedTags;
+    }
+  }
+
   // Phase 3: spend the remaining budget refining random album songs with
   // their own tags, which override the album's tags when present.
-  if (trackBudget > 0 && albumTracks.length > 0) {
-    const sample = shuffled(albumTracks).slice(0, trackBudget);
+  // Songs that already have individual tags cached (from previous runs or
+  // phase 2) are excluded so the budget always refines new songs.
+  const unrefined = albumTracks.filter(
+    (track) => !trackCache.has(trackKey(track))
+  );
+
+  if (trackBudget > 0 && unrefined.length > 0) {
+    const sample = shuffled(unrefined).slice(0, trackBudget);
 
     await runBatches(
       sample,

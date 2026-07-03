@@ -21,6 +21,7 @@ type ClassifyInput = {
   manualCategories: string[];
   maxRepeatsPerTrack?: number | null;
   maxTracksPerPlaylist?: number | null;
+  minTracksPerPlaylist?: number | null;
   maxPlaylists?: number | null;
   knownCategories?: string[];
   onProgress?: (chunksDone: number, chunksTotal: number) => void;
@@ -96,6 +97,9 @@ function buildUserPrompt(input: Omit<ClassifyInput, "tracks">, tracks: Normalize
       allowTrackOverlap: input.duplicatePolicy === "overlap",
       maxPlaylistsPerTrack: input.maxRepeatsPerTrack ?? "unlimited",
       maxTracksPerPlaylist: input.maxTracksPerPlaylist ?? "unlimited",
+      minTracksPerPlaylist: input.minTracksPerPlaylist ?? "none",
+      minTracksPerPlaylistNote:
+        "Soft target: aim for at least this many songs per playlist, but break the rule rather than forcing unrelated songs together.",
       maxTotalPlaylists: input.maxPlaylists ?? "no hard limit",
       knownCategories: input.knownCategories ?? [],
       categoryGuidance:
@@ -225,6 +229,7 @@ export type ConsolidationGroup = {
 export async function consolidateCategoriesWithAiAgent(input: {
   categories: { name: string; description?: string; trackCount: number }[];
   maxPlaylists?: number | null;
+  minTracksPerPlaylist?: number | null;
   userPrompt?: string | null;
 }): Promise<ConsolidationGroup[]> {
   const prompt = JSON.stringify({
@@ -239,6 +244,9 @@ export async function consolidateCategoriesWithAiAgent(input: {
         "Never name a group 'Mixed', 'Misc' or 'Various'."
       ],
       maxTotalPlaylists: input.maxPlaylists ?? "no hard limit",
+      minTracksPerPlaylist: input.minTracksPerPlaylist ?? "none",
+      minTracksPerPlaylistNote:
+        "Soft target: prefer merging categories below this size into the closest concept, but keep a small category if nothing fits it.",
       userPrompt: input.userPrompt ?? ""
     },
     categories: input.categories

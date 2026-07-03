@@ -11,7 +11,7 @@ type RouteContext = {
   }>;
 };
 
-export async function POST(_request: Request, context: RouteContext) {
+export async function POST(request: Request, context: RouteContext) {
   const session = await auth();
 
   if (!session?.user?.id) {
@@ -45,6 +45,20 @@ export async function POST(_request: Request, context: RouteContext) {
     );
   }
 
+  let minTracksPerPlaylist: number | null = null;
+  try {
+    const body = (await request.json()) as { minTracksPerPlaylist?: unknown };
+    if (
+      typeof body.minTracksPerPlaylist === "number" &&
+      Number.isInteger(body.minTracksPerPlaylist) &&
+      body.minTracksPerPlaylist > 0
+    ) {
+      minTracksPerPlaylist = body.minTracksPerPlaylist;
+    }
+  } catch {
+    // No body is fine.
+  }
+
   try {
     const groups = await consolidateCategoriesWithAiAgent({
       categories: run.categories.map((category) => ({
@@ -52,6 +66,7 @@ export async function POST(_request: Request, context: RouteContext) {
         description: category.description ?? undefined,
         trackCount: category.assignments.length
       })),
+      minTracksPerPlaylist,
       userPrompt: run.prompt
     });
 

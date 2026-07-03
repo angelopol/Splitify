@@ -41,6 +41,7 @@ const createSplitSchema = z.object({
   manualCategories: z.array(z.string()).default([]),
   maxRepeatsPerTrack: z.number().int().min(1).max(50).nullable().default(3),
   maxTracksPerPlaylist: z.number().int().min(1).max(10000).nullable().default(null),
+  minTracksPerPlaylist: z.number().int().min(1).max(10000).nullable().default(null),
   maxPlaylists: z.number().int().min(1).max(100).nullable().default(null),
   progressToken: z.string().max(100).optional()
 });
@@ -225,6 +226,7 @@ export async function POST(request: Request) {
         manualCategories,
         maxRepeatsPerTrack: maxRepeats,
         maxTracksPerPlaylist: input.maxTracksPerPlaylist,
+        minTracksPerPlaylist: input.minTracksPerPlaylist,
         maxPlaylists: input.maxPlaylists,
         onProgress: (done, total) => {
           reportProgress(

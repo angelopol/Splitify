@@ -1,34 +1,92 @@
-# 🎧 Splitify: AI-Powered Playlist Router
+# Splitify
 
-Splitify is an open-source, AI-driven web application that intelligently splits your massive, chaotic Spotify playlists into highly curated sub-playlists. Powered by an LLM Agent, it goes beyond traditional sorting by understanding genres, languages, ethnicities, and custom "vibes."
+Splitify is a Next.js app that routes a large Spotify playlist into smaller curated playlists using an adaptable AI agent. It reads the user's Spotify playlists, asks the agent for a structured split plan, lets the user edit the preview, and then creates private playlists back in Spotify.
 
-## 🚀 Features
+## Stack
 
-* **AI Vibe Routing:** Group tracks based on semantic instructions, custom genres, or abstract moods (e.g., "Late Night Coding," "Old School Reggaeton").
-* **Deep Spotify Integration:** Directly fetches your library and creates new playlists right in your account.
-* **Flexible Parameters:** Allow tracks to overlap in multiple playlists, strictly isolate them, or group them by linguistic/ethnic origins.
-* **Self-Hosted & Private:** Designed for personal deployment to easily comply with Spotify's Development Mode API limits.
+- Next.js App Router, React, TypeScript, Tailwind CSS
+- NextAuth.js with Spotify OAuth
+- Prisma with SQLite for local development
+- Configurable AI agent model
+- Vitest for focused unit tests
 
-## 🛠️ Tech Stack
+## Local Setup
 
-* **Frontend:** Next.js, React, Tailwind CSS
-* **Language:** TypeScript
-* **Database:** PostgreSQL / SQLite (Prisma ORM recommended)
-* **AI Engine:** Google Gemini API (Configurable model versions)
-* **Integration:** Spotify Web API
+1. Install dependencies:
 
-## ⚙️ How it Works
-
-1.  **Auth:** The user logs in via Spotify OAuth.
-2.  **Fetch:** The app retrieves the target playlist's tracklist and rich metadata (Audio Features, Genres, etc.).
-3.  **Prompt:** The user defines the destination parameters (e.g., target vibes, rules for overlapping).
-4.  **Agent Processing:** The Gemini LLM parses the track array, applies the user's logic, and outputs a structured JSON mapping of tracks to their new playlists.
-5.  **Execution:** Splitify pushes the new structure back to Spotify, generating the new playlists instantly.
-
-## 📦 Getting Started (Local Development)
-
-Since Spotify restricts API access in Development Mode, you need to use your own Developer Credentials.
-
-1. Clone the repository:
    ```bash
-   git clone [https://github.com/yourusername/splitify.git](https://github.com/yourusername/splitify.git)
+   corepack pnpm install
+   ```
+
+2. Create `.env.local` from `.env.example` and fill the values:
+
+   ```bash
+   DATABASE_URL="file:./dev.db"
+   NEXTAUTH_SECRET="replace-with-a-long-random-secret"
+   NEXTAUTH_URL="http://localhost:3000"
+   SPOTIFY_CLIENT_ID=""
+   SPOTIFY_CLIENT_SECRET=""
+   AI_AGENT_API_KEY=""
+   AI_AGENT_MODEL=""
+   ```
+
+3. In the Spotify Developer Dashboard, add this redirect URI:
+
+   ```text
+   http://localhost:3000/api/auth/callback/spotify
+   ```
+
+4. Generate Prisma Client and apply the schema:
+
+   ```bash
+   corepack pnpm prisma:generate
+   corepack pnpm prisma:migrate
+   ```
+
+5. Start the app:
+
+   ```bash
+   corepack pnpm dev
+   ```
+
+## Spotify Scopes
+
+The Spotify OAuth provider requests:
+
+- `playlist-read-private`
+- `playlist-read-collaborative`
+- `playlist-modify-private`
+- `playlist-modify-public`
+- `user-read-email`
+- `user-read-private`
+
+Access and refresh tokens are stored server-side by NextAuth in Prisma's `Account` table. API routes refresh expired Spotify access tokens before calling Spotify.
+
+## Product Flow
+
+1. Sign in with Spotify.
+2. Select a source playlist.
+3. Choose prompt, manual categories, or both.
+4. Choose whether songs can overlap across generated playlists.
+5. Generate an AI agent preview.
+6. Rename categories, move tracks, or remove tracks.
+7. Create private Spotify playlists with the configured prefix.
+
+## Scripts
+
+```bash
+corepack pnpm dev
+corepack pnpm build
+corepack pnpm lint
+corepack pnpm typecheck
+corepack pnpm test
+corepack pnpm prisma:generate
+corepack pnpm prisma:migrate
+corepack pnpm prisma:studio
+```
+
+## Notes
+
+- Spotify's restricted/deprecated Audio Features and Audio Analysis endpoints are not used. Splitify only sends compact track metadata to the AI agent: track ID, title, artists, and album.
+- Large playlists are processed in chunks and then consolidated into one editable plan.
+- `SplitAssignment.trackMetadata` is stored as a JSON string for SQLite compatibility.

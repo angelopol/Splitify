@@ -375,6 +375,75 @@ export async function fillGenresFromLastFm(
 }
 
 /**
+ * Force-refreshes per-song tags for a set of tracks, bypassing the cache,
+ * so a regroup can reconsider genres with fresh data.
+ */
+export async function refreshTrackGenres(
+  tracks: NormalizedTrack[]
+): Promise<string[]> {
+  const warnings: string[] = [];
+  const apiKey = process.env.LASTFM_API_KEY;
+  if (!apiKey) {
+    warnings.push(
+      "LASTFM_API_KEY is not set — genres were not refreshed before regrouping."
+    );
+    return warnings;
+  }
+
+  const { maxTrackLookups, batchDelayMs } = limits();
+  const stats = newLookupStats();
+  const pending = tracks
+    .filter((track) => track.artists.length > 0)
+    .slice(0, maxTrackLookups);
+
+  // Drop cached entries so every song is looked up again.
+  for (const track of pending) {
+    trackCache.delete(trackKey(track));
+  }
+
+  await runBatches(
+    pending,
+    async (track) => {
+      const tags = await fetchTopTags(
+        {
+          method: "track.getTopTags",
+          artist: track.artists[0],
+          track: track.name
+        },
+        trackCache,
+        trackKey(track),
+        5,
+        track.artists[0],
+        apiKey,
+        stats
+      );
+      if (tags.length > 0) {
+        track.genres = tags;
+        track.genreSource = "track";
+      }
+    },
+    () => false,
+    batchDelayMs
+  );
+
+  if (tracks.length > pending.length) {
+    warnings.push(
+      `Only the first ${pending.length} of ${tracks.length} songs were refreshed (LASTFM_MAX_TRACK_LOOKUPS).`
+    );
+  }
+
+  if (stats.failed > 0) {
+    warnings.push(
+      `Last.fm: ${stats.failed} of ${stats.attempted} refresh lookups failed${
+        stats.rateLimited ? " (rate limit)" : ""
+      }; those songs kept their previous genres.`
+    );
+  }
+
+  return warnings;
+}
+
+/**
  * Last-resort fallback: fills `genres` for tracks that are still empty,
  * using Last.fm community tags for the track's artists.
  */

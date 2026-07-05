@@ -3,6 +3,7 @@ import { z } from "zod";
 
 import { auth } from "@/auth";
 import { regroupTracksWithAiAgent } from "@/lib/ai-agent";
+import { refreshTrackGenres } from "@/lib/lastfm";
 import { prisma } from "@/lib/prisma";
 import type { NormalizedTrack } from "@/lib/split-plan";
 import { serializeSplitRun, splitRunInclude } from "@/lib/split-serializer";
@@ -20,7 +21,9 @@ type RouteContext = {
 
 const regroupSchema = z.object({
   categoryIds: z.array(z.string().min(1)).min(2),
-  hint: z.string().max(500).optional()
+  hint: z.string().max(2000).optional(),
+  /** Desired number of resulting playlists; defaults to the selection size. */
+  targetCount: z.number().int().min(1).max(50).optional()
 });
 
 export async function POST(request: Request, context: RouteContext) {
@@ -34,8 +37,13 @@ export async function POST(request: Request, context: RouteContext) {
   const parsed = regroupSchema.safeParse(await request.json());
 
   if (!parsed.success) {
+    const issue = parsed.error.issues[0];
     return NextResponse.json(
-      { error: "Invalid regroup request." },
+      {
+        error: `Invalid regroup request: ${issue?.path.join(".") ?? "?"} — ${
+          issue?.message ?? "unknown error"
+        }.`
+      },
       { status: 400 }
     );
   }
@@ -66,7 +74,10 @@ export async function POST(request: Request, context: RouteContext) {
 
   if (selected.length < 2) {
     return NextResponse.json(
-      { error: "Select at least two playlists to regroup." },
+      {
+        error:
+          "Fewer than two of the selected playlists exist in the saved plan — save your changes and reselect them."
+      },
       { status: 400 }
     );
   }
@@ -75,7 +86,11 @@ export async function POST(request: Request, context: RouteContext) {
   // (which carries the genres found during generation).
   const byTrackId = new Map<
     string,
-    { assignment: (typeof selected)[number]["assignments"][number]; track: NormalizedTrack }
+    {
+      assignment: (typeof selected)[number]["assignments"][number];
+      track: NormalizedTrack;
+      metadata: Partial<NormalizedTrack>;
+    }
   >();
 
   for (const category of selected) {
@@ -93,6 +108,7 @@ export async function POST(request: Request, context: RouteContext) {
 
       byTrackId.set(assignment.trackId, {
         assignment,
+        metadata,
         track: {
           id: assignment.trackId,
           uri: assignment.trackUri,
@@ -100,6 +116,7 @@ export async function POST(request: Request, context: RouteContext) {
           artists: metadata.artists ?? assignment.artists.split(", "),
           album: metadata.album ?? assignment.album ?? undefined,
           genres: metadata.genres,
+          genreSource: metadata.genreSource,
           durationMs: assignment.durationMs ?? undefined,
           sourceOrder: assignment.sourceOrder
         }
@@ -120,9 +137,15 @@ export async function POST(request: Request, context: RouteContext) {
   }
 
   try {
+    // Reconsider genres: re-fetch per-song tags (bypassing the cache)
+    // before the agent restructures the selected playlists.
+    const warnings = await refreshTrackGenres(
+      entries.map((entry) => entry.track)
+    );
+
     const result = await regroupTracksWithAiAgent({
       tracks: entries.map((entry) => entry.track),
-      targetCount: selected.length,
+      targetCount: parsed.data.targetCount ?? selected.length,
       hint: parsed.data.hint,
       avoidNames: run.categories
         .filter((category) => !selectedIds.has(category.id))
@@ -180,7 +203,11 @@ export async function POST(request: Request, context: RouteContext) {
                 durationMs: entry.assignment.durationMs,
                 sourceOrder: entry.assignment.sourceOrder,
                 categoryOrder,
-                trackMetadata: entry.assignment.trackMetadata
+                // Persist the refreshed genres for future Summary/regroups.
+                trackMetadata: JSON.stringify({
+                  ...entry.metadata,
+                  ...entry.track
+                })
               };
             })
             .filter((item): item is NonNullable<typeof item> => item !== null)
@@ -201,7 +228,7 @@ export async function POST(request: Request, context: RouteContext) {
       include: splitRunInclude
     });
 
-    return NextResponse.json({ split: serializeSplitRun(savedRun) });
+    return NextResponse.json({ split: serializeSplitRun(savedRun), warnings });
   } catch (error) {
     return NextResponse.json(
       {

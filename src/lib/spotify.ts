@@ -153,11 +153,31 @@ export async function getValidSpotifyAccessToken(userId: string) {
   return account.access_token;
 }
 
+// Auto-retry policy for Spotify 429s: waits Retry-After seconds (plus a
+// safety margin) up to this cap; longer waits surface as an error that
+// includes the exact wait time.
+const MAX_RATE_LIMIT_WAIT_SECONDS = 120;
+const MAX_RATE_LIMIT_RETRIES = 3;
+
+let rateLimitNotifier: ((seconds: number) => void) | null = null;
+
+/** Lets API routes surface "waiting Ns" in their progress reporting. */
+export function setSpotifyRateLimitNotifier(
+  notifier: ((seconds: number) => void) | null
+) {
+  rateLimitNotifier = notifier;
+}
+
+function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function spotifyFetch<T>(
   userId: string,
   pathOrUrl: string,
   init: RequestInit = {},
-  retried = false
+  retried = false,
+  rateLimitRetries = 0
 ): Promise<T> {
   const token = await getValidSpotifyAccessToken(userId);
   const url = pathOrUrl.startsWith("https://")
@@ -176,7 +196,38 @@ async function spotifyFetch<T>(
   if (response.status === 401 && !retried) {
     const account = await getSpotifyAccount(userId);
     await refreshSpotifyAccessToken(account);
-    return spotifyFetch<T>(userId, pathOrUrl, init, true);
+    return spotifyFetch<T>(userId, pathOrUrl, init, true, rateLimitRetries);
+  }
+
+  if (response.status === 429) {
+    const retryAfter = Number.parseInt(
+      response.headers.get("Retry-After") ?? "",
+      10
+    );
+    const waitSeconds =
+      Number.isFinite(retryAfter) && retryAfter > 0 ? retryAfter : 5;
+
+    if (
+      rateLimitRetries < MAX_RATE_LIMIT_RETRIES &&
+      waitSeconds <= MAX_RATE_LIMIT_WAIT_SECONDS
+    ) {
+      rateLimitNotifier?.(waitSeconds);
+      await sleep((waitSeconds + 1) * 1000);
+      return spotifyFetch<T>(
+        userId,
+        pathOrUrl,
+        init,
+        retried,
+        rateLimitRetries + 1
+      );
+    }
+
+    const minutes = Math.ceil(waitSeconds / 60);
+    throw new Error(
+      `Spotify rate limit reached (429). Wait ${waitSeconds} seconds${
+        waitSeconds > 90 ? ` (~${minutes} min)` : ""
+      } before trying again — retrying earlier restarts the penalty.`
+    );
   }
 
   const body = await response.text();

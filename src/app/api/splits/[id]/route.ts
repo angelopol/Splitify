@@ -21,7 +21,9 @@ const updateSplitSchema = z.object({
     .array(
       z.object({
         name: z.string().min(1),
-        description: z.string().optional(),
+        // Categories created by import/consolidate have no description,
+        // which serializes as null — accept it.
+        description: z.string().nullish(),
         trackIds: z.array(z.string()).default([])
       })
     )
@@ -49,6 +51,28 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 
   return NextResponse.json({ split: serializeSplitRun(run) });
+}
+
+export async function DELETE(_request: Request, context: RouteContext) {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const { id } = await context.params;
+  const deleted = await prisma.splitRun.deleteMany({
+    where: {
+      id,
+      userId: session.user.id
+    }
+  });
+
+  if (deleted.count === 0) {
+    return NextResponse.json({ error: "Split not found." }, { status: 404 });
+  }
+
+  return NextResponse.json({ ok: true });
 }
 
 export async function PATCH(request: Request, context: RouteContext) {
@@ -96,7 +120,7 @@ export async function PATCH(request: Request, context: RouteContext) {
   const categories: ClassificationCategory[] = parsed.data.categories.map(
     (category) => ({
       name: category.name,
-      description: category.description,
+      description: category.description ?? undefined,
       trackIds: category.trackIds
     })
   );

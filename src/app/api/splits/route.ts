@@ -22,7 +22,11 @@ import {
   setSplitProgress
 } from "@/lib/progress";
 import { serializeSplitRun, splitRunInclude } from "@/lib/split-serializer";
-import { getArtistsGenres, getPlaylistTracks } from "@/lib/spotify";
+import {
+  getArtistsGenres,
+  getPlaylistTracks,
+  setSpotifyRateLimitNotifier
+} from "@/lib/spotify";
 
 const createSplitSchema = z.object({
   sourcePlaylists: z
@@ -103,6 +107,43 @@ async function persistClassification(
   });
 }
 
+export async function GET() {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  }
+
+  const runs = await prisma.splitRun.findMany({
+    where: { userId: session.user.id },
+    orderBy: { updatedAt: "desc" },
+    take: 30,
+    select: {
+      id: true,
+      sourcePlaylistName: true,
+      status: true,
+      updatedAt: true,
+      _count: {
+        select: {
+          categories: true,
+          assignments: true
+        }
+      }
+    }
+  });
+
+  return NextResponse.json({
+    splits: runs.map((run) => ({
+      id: run.id,
+      name: run.sourcePlaylistName,
+      status: run.status,
+      updatedAt: run.updatedAt,
+      categories: run._count.categories,
+      tracks: run._count.assignments
+    }))
+  });
+}
+
 export async function POST(request: Request) {
   const session = await auth();
 
@@ -146,6 +187,12 @@ export async function POST(request: Request) {
       setSplitProgress(userId, progressToken, { message, current, total });
     }
   }
+
+  setSpotifyRateLimitNotifier((seconds) => {
+    reportProgress(
+      `Spotify rate limit hit — waiting ${seconds}s before retrying automatically…`
+    );
+  });
 
   try {
     // Combine every selected playlist, dropping duplicate tracks and
@@ -268,6 +315,8 @@ export async function POST(request: Request) {
       include: splitRunInclude
     });
 
+    setSpotifyRateLimitNotifier(null);
+
     if (progressToken) {
       clearSplitProgress(userId, progressToken);
     }
@@ -276,6 +325,8 @@ export async function POST(request: Request) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to classify playlist.";
+
+    setSpotifyRateLimitNotifier(null);
 
     if (progressToken) {
       clearSplitProgress(userId, progressToken);

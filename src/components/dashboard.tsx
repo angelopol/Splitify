@@ -23,6 +23,7 @@ import {
   Search,
   Sparkles,
   Trash2,
+  Upload,
   X
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
@@ -45,6 +46,15 @@ type Assignment = {
   durationMs?: number;
   sourceOrder: number;
   trackMetadata?: string;
+};
+
+type SavedSplit = {
+  id: string;
+  name: string;
+  status: string;
+  updatedAt: string;
+  categories: number;
+  tracks: number;
 };
 
 type SummaryData = {
@@ -285,12 +295,90 @@ export function Dashboard({ userName }: { userName?: string | null }) {
   const [moveMenu, setMoveMenu] = useState<{
     categoryId: string;
     assignmentId: string;
+    right: number;
+    top?: number;
+    bottom?: number;
   } | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
+  const [importText, setImportText] = useState("");
+  const [importSource, setImportSource] = useState<"local" | "playlists">(
+    "local"
+  );
+  const [importing, setImporting] = useState(false);
+  const [savedSplits, setSavedSplits] = useState<SavedSplit[]>([]);
+  const [resumingId, setResumingId] = useState<string | null>(null);
+  const importId = useRef(0);
+
+  async function loadSavedSplits() {
+    try {
+      const data = await readJson<{ splits: SavedSplit[] }>(
+        await fetch("/api/splits")
+      );
+      setSavedSplits(data.splits);
+    } catch {
+      // The saved list is never blocking.
+    }
+  }
+
+  async function resumeSplit(id: string) {
+    setResumingId(id);
+
+    try {
+      const data = await readJson<{ split: SplitRun }>(
+        await fetch(`/api/splits/${id}`)
+      );
+      setSplit(data.split);
+      setDirty(false);
+      setTrackFilter("");
+      setVisibleCounts({});
+      setMoveMenu(null);
+      setMergeMode(false);
+      setMergeSelect([]);
+      goToStep(2);
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Unable to load the split."
+      );
+    } finally {
+      setResumingId(null);
+    }
+  }
+
+  function requestDeleteSaved(saved: SavedSplit) {
+    setConfirmRequest({
+      title: "Delete saved split",
+      message: `Delete the saved split for "${saved.name}" (${saved.categories} playlists)? Playlists already created in Spotify are not affected.`,
+      confirmLabel: "Delete",
+      tone: "danger",
+      onConfirm: async () => {
+        try {
+          await readJson<{ ok: boolean }>(
+            await fetch(`/api/splits/${saved.id}`, { method: "DELETE" })
+          );
+          setSavedSplits((current) =>
+            current.filter((item) => item.id !== saved.id)
+          );
+          if (split?.id === saved.id) {
+            setSplit(null);
+            setDirty(false);
+          }
+          notify("success", "Saved split deleted.");
+        } catch (error) {
+          notify(
+            "error",
+            error instanceof Error ? error.message : "Unable to delete."
+          );
+        }
+      }
+    });
+  }
   const [merging, setMerging] = useState(false);
   const [planText, setPlanText] = useState<string | null>(null);
   const [mergeMode, setMergeMode] = useState(false);
   const [mergeSelect, setMergeSelect] = useState<string[]>([]);
   const [regroupHint, setRegroupHint] = useState("");
+  const [regroupCount, setRegroupCount] = useState("");
   const [regrouping, setRegrouping] = useState(false);
   const [summary, setSummary] = useState<SummaryData | null>(null);
   const [prompt, setPrompt] = useState(PROMPT_PRESETS[0]);
@@ -375,7 +463,21 @@ export function Dashboard({ userName }: { userName?: string | null }) {
       }
     }
 
+    async function loadSaved() {
+      try {
+        const data = await readJson<{ splits: SavedSplit[] }>(
+          await fetch("/api/splits")
+        );
+        if (mounted) {
+          setSavedSplits(data.splits);
+        }
+      } catch {
+        // The saved list is never blocking.
+      }
+    }
+
     loadPlaylists();
+    loadSaved();
 
     return () => {
       mounted = false;
@@ -408,14 +510,11 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     );
   }, [playlists, playlistQuery]);
 
-  const totalAssigned = useMemo(
-    () =>
-      split?.categories.reduce(
-        (total, category) => total + category.assignments.length,
-        0
-      ) ?? 0,
-    [split]
-  );
+  const totalAssigned =
+    split?.categories.reduce(
+      (total, category) => total + category.assignments.length,
+      0
+    ) ?? 0;
 
   const isLocked = split?.status === "executing" || split?.status === "completed";
 
@@ -499,6 +598,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
       for (const warning of data.warnings ?? []) {
         notify("error", warning);
       }
+      loadSavedSplits();
       goToStep(2);
     } catch (error) {
       notify(
@@ -945,34 +1045,59 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     });
   }
 
-  async function regroupSelected() {
+  async function regroupSelected(targetCount?: number) {
     if (!split || mergeSelect.length < 2) {
       return;
     }
 
+    // Saving recreates every category with new ids, so remember the
+    // selection by position and remap it after the save.
+    let categoryIds = mergeSelect;
+
     if (dirty) {
+      const selectedIndexes = split.categories
+        .map((category, index) => ({ id: category.id, index }))
+        .filter((entry) => mergeSelect.includes(entry.id))
+        .map((entry) => entry.index);
+
       const saved = await savePreview();
       if (!saved) {
         return;
       }
+
+      categoryIds = selectedIndexes
+        .map((index) => saved.categories[index]?.id)
+        .filter((id): id is string => Boolean(id));
+
+      if (categoryIds.length < 2) {
+        notify(
+          "error",
+          "The selection was lost while saving — please reselect the playlists."
+        );
+        setMergeSelect([]);
+        return;
+      }
+
+      setMergeSelect(categoryIds);
     }
 
     setRegrouping(true);
     notify(
       "info",
-      `Asking the agent to regroup ${mergeSelect.length} playlists into sharper concepts…`
+      `Refreshing song genres and regrouping ${mergeSelect.length} playlists — this can take a while…`
     );
 
     try {
-      const data = await readJson<{ split: SplitRun }>(
+      const data = await readJson<{ split: SplitRun; warnings?: string[] }>(
         await fetch(`/api/splits/${split.id}/regroup`, {
           method: "POST",
           headers: {
             "Content-Type": "application/json"
           },
           body: JSON.stringify({
-            categoryIds: mergeSelect,
-            hint: regroupHint.trim() || undefined
+            categoryIds,
+            hint: regroupHint.trim() || undefined,
+            targetCount
           })
         })
       );
@@ -983,7 +1108,10 @@ export function Dashboard({ userName }: { userName?: string | null }) {
       setMergeSelect([]);
       setMergeMode(false);
       setRegroupHint("");
-      notify("success", "Playlists regrouped with sharper concepts.");
+      notify("success", "Playlists regrouped with freshly resolved genres.");
+      for (const warning of data.warnings ?? []) {
+        notify("error", warning);
+      }
     } catch (error) {
       notify(
         "error",
@@ -992,6 +1120,160 @@ export function Dashboard({ userName }: { userName?: string | null }) {
     } finally {
       setRegrouping(false);
     }
+  }
+
+  async function importFromPlaylists() {
+    if (selectedPlaylists.length === 0) {
+      return;
+    }
+
+    setImporting(true);
+    notify(
+      "info",
+      `Reading ${selectedPlaylists.length} playlist(s) and matching the pasted plan…`
+    );
+
+    try {
+      const data = await readJson<{ split: SplitRun; unmatched: number }>(
+        await fetch("/api/splits/import", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            sourcePlaylists: selectedPlaylists.map((playlist) => ({
+              id: playlist.id,
+              name: playlist.name
+            })),
+            text: importText,
+            playlistPrefix
+          })
+        })
+      );
+
+      setSplit(data.split);
+      setDirty(false);
+      setTrackFilter("");
+      setVisibleCounts({});
+      setMoveMenu(null);
+      setImportOpen(false);
+      setImportText("");
+      notify(
+        data.unmatched > 0 ? "error" : "success",
+        `Imported ${data.split.categories.length} playlists from text.${
+          data.unmatched > 0
+            ? ` ${data.unmatched} lines didn't match any track in the selected playlists.`
+            : ""
+        }`
+      );
+      loadSavedSplits();
+      goToStep(2);
+    } catch (error) {
+      notify(
+        "error",
+        error instanceof Error ? error.message : "Unable to import the plan."
+      );
+    } finally {
+      setImporting(false);
+    }
+  }
+
+  function importPlanFromText() {
+    if (importSource === "playlists") {
+      void importFromPlaylists();
+      return;
+    }
+
+    if (!split) {
+      return;
+    }
+
+    // Match "- Track — Artists" lines against the current split's tracks.
+    const byLine = new Map<string, Assignment>();
+    for (const category of split.categories) {
+      for (const assignment of category.assignments) {
+        const key = `${assignment.trackName} — ${assignment.artists}`
+          .toLowerCase()
+          .replace(/\s+/g, " ")
+          .trim();
+        if (!byLine.has(key)) {
+          byLine.set(key, assignment);
+        }
+      }
+    }
+
+    const categories: SplitCategory[] = [];
+    let current: SplitCategory | null = null;
+    let unmatched = 0;
+    let duplicates = 0;
+    const usedTrackIds = new Set<string>();
+    const enforceSingle = split.duplicatePolicy === "single";
+
+    for (const raw of importText.split(/\r?\n/)) {
+      const line = raw.trim();
+
+      const header = line.match(/^##\s+(.+?)\s*(?:\(\d+\))?\s*$/);
+      if (header) {
+        current = {
+          id: `local-import-${++importId.current}`,
+          name: header[1],
+          assignments: []
+        };
+        categories.push(current);
+        continue;
+      }
+
+      const item = line.match(/^-\s+(.+)$/);
+      if (item && current) {
+        const key = item[1].toLowerCase().replace(/\s+/g, " ").trim();
+        const found = byLine.get(key);
+
+        if (!found) {
+          unmatched += 1;
+          continue;
+        }
+
+        if (enforceSingle && usedTrackIds.has(found.trackId)) {
+          duplicates += 1;
+          continue;
+        }
+        usedTrackIds.add(found.trackId);
+
+        current.assignments.push({
+          ...found,
+          id: `local-a-${++importId.current}`
+        });
+      }
+    }
+
+    if (categories.length === 0) {
+      notify(
+        "error",
+        "No playlists found — expected lines like “## Playlist name” followed by “- Track — Artists”."
+      );
+      return;
+    }
+
+    markDirty();
+    setSplit({ ...split, categories });
+    setVisibleCounts({});
+    setMoveMenu(null);
+    setImportOpen(false);
+    setImportText("");
+
+    const notes: string[] = [];
+    if (unmatched > 0) {
+      notes.push(`${unmatched} lines didn't match any track and were skipped`);
+    }
+    if (duplicates > 0) {
+      notes.push(`${duplicates} duplicate tracks skipped (single policy)`);
+    }
+    notify(
+      notes.length > 0 ? "error" : "success",
+      `Imported ${categories.length} playlists from text.${
+        notes.length > 0 ? ` ${notes.join("; ")}.` : ""
+      }`
+    );
   }
 
   function openPlanText() {
@@ -1059,6 +1341,25 @@ export function Dashboard({ userName }: { userName?: string | null }) {
   return (
     <main className="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-8 px-4 py-8 sm:px-6 lg:px-8">
       <ToastStack dismiss={dismissToast} toasts={toasts} />
+
+      {step === 2 &&
+      split &&
+      !mergeMode &&
+      !isLocked &&
+      split.categories.length >= 2 ? (
+        <button
+          className="focus-ring fixed bottom-4 left-1/2 z-40 inline-flex h-12 -translate-x-1/2 items-center gap-2 rounded-full border border-[var(--accent)] bg-[var(--panel-soft)] px-6 font-bold text-[var(--accent-strong)] shadow-[0_8px_40px_rgba(0,0,0,0.6)] transition hover:bg-[var(--accent)] hover:text-[#04140a]"
+          disabled={saving || executing || merging || regrouping}
+          onClick={() => {
+            setMergeMode(true);
+            setMergeSelect([]);
+          }}
+          type="button"
+        >
+          <Check aria-hidden="true" size={16} />
+          Select &amp; merge
+        </button>
+      ) : null}
       {moveMenu ? (
         <div
           aria-hidden="true"
@@ -1147,6 +1448,87 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                     </span>
                   </div>
                 ))}
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {importOpen ? (
+        <div
+          aria-modal="true"
+          className="fixed inset-0 z-50 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
+          onClick={() => setImportOpen(false)}
+          role="dialog"
+        >
+          <div
+            className="rise flex max-h-[85vh] w-full max-w-2xl flex-col rounded-2xl border border-[var(--line)] bg-[var(--panel-soft)] shadow-2xl"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="flex items-center gap-2 border-b border-[var(--line)] p-4">
+              <Upload
+                aria-hidden="true"
+                className="text-[var(--accent-strong)]"
+                size={18}
+              />
+              <h3 className="min-w-0 flex-1 truncate text-lg font-bold">
+                Import plan from text
+              </h3>
+              <button
+                className="focus-ring rounded-full p-1.5 text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                onClick={() => setImportOpen(false)}
+                title="Close"
+                type="button"
+              >
+                <X aria-hidden="true" size={18} />
+              </button>
+            </div>
+            <div className="flex min-h-0 flex-1 flex-col gap-3 p-4">
+              <p className="text-sm text-[var(--muted)]">
+                Paste a plan in the &ldquo;As text&rdquo; format —{" "}
+                <code className="rounded bg-[var(--panel)] px-1">
+                  ## Playlist (n)
+                </code>{" "}
+                headers followed by{" "}
+                <code className="rounded bg-[var(--panel)] px-1">
+                  - Track — Artists
+                </code>{" "}
+                lines.{" "}
+                {importSource === "playlists"
+                  ? `Tracks are matched against the ${selectedPlaylists.length} selected playlist(s) and a new editable preview is created — no AI involved.`
+                  : "Tracks are matched against the current preview; the plan is replaced with what you paste."}
+              </p>
+              <textarea
+                className="field focus-ring min-h-64 flex-1 resize-y px-3 py-2 font-mono text-xs leading-5"
+                onChange={(event) => setImportText(event.target.value)}
+                placeholder={"## Latin Trap & Rap (2)\n- Dile — Don Omar\n- Mi Gente — Héctor Lavoe"}
+                value={importText}
+              />
+              <div className="flex justify-end gap-2">
+                <button
+                  className="focus-ring inline-flex h-10 items-center rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:text-[var(--foreground)]"
+                  onClick={() => setImportOpen(false)}
+                  type="button"
+                >
+                  Cancel
+                </button>
+                <button
+                  className="focus-ring inline-flex h-10 items-center gap-2 rounded-full bg-[var(--accent)] px-5 text-sm font-bold text-[#04140a] transition hover:bg-[var(--accent-strong)]"
+                  disabled={importText.trim().length === 0 || importing}
+                  onClick={importPlanFromText}
+                  type="button"
+                >
+                  {importing ? (
+                    <Loader2
+                      aria-hidden="true"
+                      className="animate-spin"
+                      size={14}
+                    />
+                  ) : (
+                    <Upload aria-hidden="true" size={14} />
+                  )}
+                  Import
+                </button>
               </div>
             </div>
           </div>
@@ -1395,7 +1777,80 @@ export function Dashboard({ userName }: { userName?: string | null }) {
           </div>
         ) : null}
 
-        <div className="mt-5 flex justify-end border-t border-[var(--line)] pt-4">
+        {savedSplits.length > 0 ? (
+          <div className="mt-5 border-t border-[var(--line)] pt-4">
+            <h3 className="text-sm font-bold">Saved splits</h3>
+            <div className="mt-2 grid gap-2 md:grid-cols-2">
+              {savedSplits.map((saved) => (
+                <div
+                  className="flex items-center gap-3 rounded-xl border border-[var(--line)] bg-[var(--panel)] px-3 py-2.5"
+                  key={saved.id}
+                >
+                  <div className="min-w-0 flex-1">
+                    <p className="truncate text-sm font-semibold">
+                      {saved.name}
+                    </p>
+                    <p className="truncate text-xs text-[var(--muted)]">
+                      {saved.categories} playlists · {saved.tracks} tracks ·{" "}
+                      {new Date(saved.updatedAt).toLocaleString()}
+                    </p>
+                  </div>
+                  <span
+                    className={`shrink-0 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                      saved.status === "completed"
+                        ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
+                        : saved.status === "failed"
+                          ? "bg-[rgba(255,107,107,0.12)] text-[var(--danger)]"
+                          : "bg-[var(--panel-soft)] text-[var(--muted)]"
+                    }`}
+                  >
+                    {saved.status}
+                  </span>
+                  <button
+                    className="focus-ring inline-flex h-9 items-center gap-1.5 rounded-full border border-[var(--line)] px-3 text-xs font-semibold transition hover:border-[var(--accent)]"
+                    disabled={resumingId !== null}
+                    onClick={() => resumeSplit(saved.id)}
+                    type="button"
+                  >
+                    {resumingId === saved.id ? (
+                      <Loader2
+                        aria-hidden="true"
+                        className="animate-spin"
+                        size={13}
+                      />
+                    ) : (
+                      <ArrowRight aria-hidden="true" size={13} />
+                    )}
+                    Open
+                  </button>
+                  <button
+                    className="focus-ring shrink-0 rounded-md p-1.5 text-[var(--muted)] transition hover:text-[var(--danger)]"
+                    onClick={() => requestDeleteSaved(saved)}
+                    title="Delete saved split"
+                    type="button"
+                  >
+                    <Trash2 aria-hidden="true" size={14} />
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
+        <div className="mt-5 flex flex-wrap items-center justify-end gap-2 border-t border-[var(--line)] pt-4">
+          <button
+            className="focus-ring inline-flex h-11 items-center gap-2 rounded-full border border-[var(--line)] px-5 font-semibold transition hover:border-[var(--accent)]"
+            disabled={selectedPlaylists.length === 0 || importing}
+            onClick={() => {
+              setImportSource("playlists");
+              setImportOpen(true);
+            }}
+            title="Skip the AI: paste a plan as text and go straight to review"
+            type="button"
+          >
+            <Upload aria-hidden="true" size={16} />
+            Import text
+          </button>
           <button
             className="focus-ring inline-flex h-11 items-center gap-2 rounded-full bg-[var(--accent)] px-5 font-bold text-[#04140a] transition hover:bg-[var(--accent-strong)]"
             disabled={selectedPlaylists.length === 0}
@@ -1771,6 +2226,19 @@ export function Dashboard({ userName }: { userName?: string | null }) {
             </button>
             <button
               className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
+              disabled={!split || isLocked || saving || executing}
+              onClick={() => {
+                setImportSource("local");
+                setImportOpen(true);
+              }}
+              title="Rebuild the plan from pasted text (same format as “As text”)"
+              type="button"
+            >
+              <Upload aria-hidden="true" size={16} />
+              Import text
+            </button>
+            <button
+              className="focus-ring inline-flex h-10 items-center gap-2 rounded-full border border-[var(--line)] px-4 text-sm font-semibold transition hover:border-[var(--accent)]"
               disabled={
                 !split ||
                 saving ||
@@ -1870,7 +2338,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
         ) : (
           <>
           {mergeMode ? (
-            <div className="rise mt-4 space-y-3 rounded-xl border border-[var(--accent)] bg-[var(--accent-soft)] px-4 py-3">
+            <div className="rise fixed bottom-4 left-1/2 z-40 w-[min(56rem,calc(100vw-2rem))] -translate-x-1/2 space-y-3 rounded-2xl border border-[var(--accent)] bg-[var(--panel-soft)] px-4 py-3 shadow-[0_8px_40px_rgba(0,0,0,0.6)]">
               <div className="flex flex-wrap items-center gap-3">
                 <p className="min-w-0 flex-1 text-sm font-semibold">
                   {mergeSelect.length < 2
@@ -1890,7 +2358,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                 <button
                   className="focus-ring inline-flex h-9 items-center gap-2 rounded-full border border-[var(--accent)] px-4 text-sm font-bold text-[var(--accent-strong)] transition hover:bg-[var(--accent)] hover:text-[#04140a]"
                   disabled={mergeSelect.length < 2 || regrouping}
-                  onClick={regroupSelected}
+                  onClick={() => regroupSelected()}
                   title="Re-split these songs into the same number of playlists with more specific concepts"
                   type="button"
                 >
@@ -1905,6 +2373,42 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                   )}
                   Regroup with AI
                 </button>
+                <div className="flex items-center gap-1.5">
+                  <input
+                    aria-label="Number of resulting playlists"
+                    className="field focus-ring h-9 w-16 px-2 text-center text-sm"
+                    inputMode="numeric"
+                    min={1}
+                    onChange={(event) => setRegroupCount(event.target.value)}
+                    placeholder="N"
+                    type="number"
+                    value={regroupCount}
+                  />
+                  <button
+                    className="focus-ring inline-flex h-9 items-center gap-2 rounded-full border border-[var(--accent)] px-4 text-sm font-bold text-[var(--accent-strong)] transition hover:bg-[var(--accent)] hover:text-[#04140a]"
+                    disabled={
+                      mergeSelect.length < 2 ||
+                      regrouping ||
+                      !(Number.parseInt(regroupCount, 10) > 0)
+                    }
+                    onClick={() =>
+                      regroupSelected(Number.parseInt(regroupCount, 10))
+                    }
+                    title="Re-split these songs into exactly N playlists, whatever number you choose"
+                    type="button"
+                  >
+                    {regrouping ? (
+                      <Loader2
+                        aria-hidden="true"
+                        className="animate-spin"
+                        size={14}
+                      />
+                    ) : (
+                      <Layers aria-hidden="true" size={14} />
+                    )}
+                    Merge &amp; Regroup
+                  </button>
+                </div>
                 <button
                   className="focus-ring inline-flex h-9 items-center rounded-full border border-[var(--line)] px-4 text-sm font-semibold text-[var(--muted)] transition hover:text-[var(--foreground)]"
                   disabled={regrouping}
@@ -1917,10 +2421,12 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                   Cancel
                 </button>
               </div>
-              <input
-                className="field focus-ring h-10 w-full px-3 text-sm"
+              <textarea
+                className="field focus-ring min-h-10 w-full resize-y px-3 py-2 text-sm leading-6"
+                maxLength={2000}
                 onChange={(event) => setRegroupHint(event.target.value)}
                 placeholder="Optional suggestion for the regroup, e.g. “split by sub-genre: drumless, psycho rap, boom bap”"
+                rows={2}
                 value={regroupHint}
               />
             </div>
@@ -2040,7 +2546,10 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                     </p>
                   </div>
 
-                  <div className="max-h-[440px] overflow-y-auto p-2">
+                  <div
+                    className="max-h-[440px] overflow-y-auto p-2"
+                    onScroll={() => setMoveMenu(null)}
+                  >
                     {visibleAssignments.length === 0 ? (
                       <p className="p-3 text-center text-sm text-[var(--muted)]">
                         {filter
@@ -2099,16 +2608,27 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                                       ? "bg-[var(--accent-soft)] text-[var(--accent-strong)]"
                                       : "text-[var(--muted)] hover:text-[var(--foreground)]"
                                   }`}
-                                  onClick={() =>
-                                    setMoveMenu(
-                                      menuOpen
-                                        ? null
+                                  onClick={(event) => {
+                                    if (menuOpen) {
+                                      setMoveMenu(null);
+                                      return;
+                                    }
+                                    const rect =
+                                      event.currentTarget.getBoundingClientRect();
+                                    const spaceBelow =
+                                      window.innerHeight - rect.bottom;
+                                    setMoveMenu({
+                                      categoryId: category.id,
+                                      assignmentId: assignment.id,
+                                      right: window.innerWidth - rect.right,
+                                      ...(spaceBelow > 300
+                                        ? { top: rect.bottom + 4 }
                                         : {
-                                            categoryId: category.id,
-                                            assignmentId: assignment.id
-                                          }
-                                    )
-                                  }
+                                            bottom:
+                                              window.innerHeight - rect.top + 4
+                                          })
+                                    });
+                                  }}
                                   title="Move to another playlist"
                                   type="button"
                                 >
@@ -2125,7 +2645,14 @@ export function Dashboard({ userName }: { userName?: string | null }) {
                                   <X aria-hidden="true" size={14} />
                                 </button>
                                 {menuOpen ? (
-                                  <div className="rise absolute right-2 top-full z-20 mt-1 w-56 max-w-[calc(100%-1rem)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel-soft)] shadow-2xl">
+                                  <div
+                                    className="rise fixed z-30 w-56 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-[var(--line)] bg-[var(--panel-soft)] shadow-2xl"
+                                    style={{
+                                      right: moveMenu?.right,
+                                      top: moveMenu?.top,
+                                      bottom: moveMenu?.bottom
+                                    }}
+                                  >
                                     <p className="border-b border-[var(--line)] px-3 py-2 text-xs font-semibold uppercase tracking-wide text-[var(--muted)]">
                                       Move to…
                                     </p>
@@ -2196,6 +2723,7 @@ export function Dashboard({ userName }: { userName?: string | null }) {
               );
             })}
           </div>
+          {mergeMode ? <div aria-hidden="true" className="h-48" /> : null}
           </>
         )}
 

@@ -27,7 +27,7 @@ Splitify is a Next.js app that routes a large Spotify playlist into smaller cura
    SPOTIFY_CLIENT_ID=""
    SPOTIFY_CLIENT_SECRET=""
    AI_AGENT_API_KEY=""
-   AI_AGENT_MODEL=""
+   AI_AGENT_MODEL="gemini-3.5-flash-lite"
    ```
 
 3. In the Spotify Developer Dashboard, add this redirect URI:

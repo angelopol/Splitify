@@ -183,9 +183,15 @@ async function spotifyFetch<T>(
   const url = pathOrUrl.startsWith("https://")
     ? pathOrUrl
     : `${SPOTIFY_API_BASE}${pathOrUrl}`;
+  const destination = new URL(url);
+  if (destination.origin !== "https://api.spotify.com" || !destination.pathname.startsWith("/v1/")) {
+    throw new Error("Invalid Spotify API destination.");
+  }
 
   const response = await fetch(url, {
     ...init,
+    redirect: "error",
+    signal: init.signal ?? AbortSignal.timeout(30_000),
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
@@ -367,11 +373,9 @@ export async function createSpotifyPlaylist(
   name: string,
   visibility: PlaylistVisibility
 ) {
-  const profile = await getCurrentSpotifyProfile(userId);
-
   const playlist = await spotifyFetch<
     CreatedSpotifyPlaylist & { external_urls?: { spotify?: string } }
-  >(userId, `/users/${profile.id}/playlists`, {
+  >(userId, "/me/playlists", {
     method: "POST",
     body: JSON.stringify({
       name,

@@ -118,14 +118,20 @@ async function callAiProvider(
   schema: Record<string, unknown> = responseSchema
 ) {
   const apiKey = requiredEnv("AI_AGENT_API_KEY");
-  const model = requiredEnv("AI_AGENT_MODEL");
+  const model = process.env.AI_AGENT_MODEL?.trim() || "gemini-3.5-flash-lite";
+  if (!/^[a-zA-Z0-9.-]+$/.test(model)) {
+    throw new Error("Invalid AI_AGENT_MODEL.");
+  }
   const response = await fetch(
-    `${AI_AGENT_API_BASE}/models/${model}:generateContent?key=${apiKey}`,
+    `${AI_AGENT_API_BASE}/models/${model}:generateContent`,
     {
       method: "POST",
       headers: {
-        "Content-Type": "application/json"
+        "Content-Type": "application/json",
+        "x-goog-api-key": apiKey
       },
+      signal: AbortSignal.timeout(120_000),
+      redirect: "error",
       body: JSON.stringify({
         systemInstruction: {
           parts: [{ text: buildSystemPrompt() }]
@@ -145,8 +151,7 @@ async function callAiProvider(
   );
 
   if (!response.ok) {
-    const body = await response.text();
-    throw new Error(`AI agent request failed: ${response.status} ${body}`);
+    throw new Error(`AI agent request failed: ${response.status}. Check model access, API key and quota.`);
   }
 
   const payload = (await response.json()) as {
